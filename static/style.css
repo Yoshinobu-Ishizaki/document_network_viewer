@@ -155,21 +155,30 @@ main {
 #merge-confirm:hover { background: var(--accent-hover); }
 #merge-cancel:hover { background: var(--border); }
 
+/* ── Resize handle ── */
+#resize-handle {
+  width: 6px;
+  flex-shrink: 0;
+  background: var(--border);
+  cursor: col-resize;
+  transition: background 0.15s;
+  position: relative;
+}
+#resize-handle:hover, #resize-handle.dragging { background: var(--accent); }
+#resize-handle.hidden { display: none; }
+
 /* ── Doc panel ── */
 #doc-panel {
   width: var(--panel-w);
   flex-shrink: 0;
   background: var(--surface);
-  border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  transition: width 0.2s ease;
 }
 
 #doc-panel.hidden {
   width: 0;
-  border-left: none;
 }
 
 #doc-panel-header {

@@ -176,13 +176,12 @@ function onNodeClick(params) {
 
 // ── Doc panel ─────────────────────────────────────────────────────────────
 async function openDoc(filename, title) {
-  const panel = document.getElementById("doc-panel");
   const titleEl = document.getElementById("doc-title");
   const contentEl = document.getElementById("doc-content");
 
   titleEl.textContent = title;
   contentEl.innerHTML = "<p style='color:#6b7280'>Loading…</p>";
-  panel.classList.remove("hidden");
+  showDocPanel();
 
   const res = await fetch(`/api/doc/${encodeURIComponent(filename)}`);
   if (!res.ok) {
@@ -194,8 +193,51 @@ async function openDoc(filename, title) {
   contentEl.innerHTML = data.html;
 }
 
+const docPanel = document.getElementById("doc-panel");
+const resizeHandle = document.getElementById("resize-handle");
+
 document.getElementById("doc-close").addEventListener("click", () => {
-  document.getElementById("doc-panel").classList.add("hidden");
+  docPanel.classList.add("hidden");
+  resizeHandle.classList.add("hidden");
+});
+
+// Show resize handle whenever doc panel opens
+function showDocPanel() {
+  docPanel.classList.remove("hidden");
+  resizeHandle.classList.remove("hidden");
+}
+
+// ── Resizable doc panel ────────────────────────────────────────────────────
+const PANEL_MIN = 200;
+const PANEL_MAX_RATIO = 0.8;
+
+// Restore saved width from previous session
+const savedWidth = localStorage.getItem("docPanelWidth");
+if (savedWidth) docPanel.style.width = `${savedWidth}px`;
+
+resizeHandle.addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  resizeHandle.classList.add("dragging");
+  document.body.style.cursor = "col-resize";
+  document.body.style.userSelect = "none";
+
+  function onMouseMove(e) {
+    const maxW = window.innerWidth * PANEL_MAX_RATIO;
+    const newW = Math.min(maxW, Math.max(PANEL_MIN, window.innerWidth - e.clientX));
+    docPanel.style.width = `${newW}px`;
+  }
+
+  function onMouseUp() {
+    resizeHandle.classList.remove("dragging");
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    localStorage.setItem("docPanelWidth", parseInt(docPanel.style.width));
+    window.removeEventListener("mousemove", onMouseMove);
+    window.removeEventListener("mouseup", onMouseUp);
+  }
+
+  window.addEventListener("mousemove", onMouseMove);
+  window.addEventListener("mouseup", onMouseUp);
 });
 
 // ── Breadcrumb ────────────────────────────────────────────────────────────
