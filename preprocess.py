@@ -28,6 +28,7 @@ load_dotenv()  # reads .env if present; env vars already set take priority
 DATA_DIR = Path("data")
 CACHE_FILE = DATA_DIR / ".cache.json"
 INDEX_FILE = DATA_DIR / "index.json"
+TEXT_CACHE_DIR = DATA_DIR / ".text_cache"
 CONFIG_FILE = Path("config.yaml")
 
 BATCH_SIZE = 20
@@ -113,6 +114,16 @@ def load_index() -> dict | None:
         with open(INDEX_FILE, encoding="utf-8") as f:
             return json.load(f)
     return None
+
+
+def write_text_cache(all_docs: list[Path], cache: dict) -> None:
+    """Write extracted text for each doc to .text_cache/ for keyword search."""
+    TEXT_CACHE_DIR.mkdir(exist_ok=True)
+    for path in all_docs:
+        entry = cache.get(path.name, {})
+        text = entry.get("content", "")
+        if text:
+            (TEXT_CACHE_DIR / (path.name + ".txt")).write_text(text, encoding="utf-8")
 
 
 def index_doc_assignments(index: dict) -> dict[str, dict]:
@@ -570,6 +581,8 @@ def main() -> None:
     if constraints:
         print("Applying subcategory constraints...")
         categorized = apply_constraints(categorized, constraints, client, categories)
+
+    write_text_cache(all_docs, cache)
 
     index = build_index(categorized)
     with open(INDEX_FILE, "w", encoding="utf-8") as f:

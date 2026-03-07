@@ -369,6 +369,71 @@ async function reloadGraph() {
   renderLevel(currentLevel, currentL1, currentL2);
 }
 
+// ── Keyword search ────────────────────────────────────────────────────────
+const searchInput = document.getElementById("search-input");
+const searchBtn = document.getElementById("search-btn");
+const searchResults = document.getElementById("search-results");
+const searchResultsList = document.getElementById("search-results-list");
+const searchResultsLabel = document.getElementById("search-results-label");
+
+function closeSearchResults() {
+  searchResults.classList.add("hidden");
+  searchInput.value = "";
+}
+
+document.getElementById("search-results-close").addEventListener("click", closeSearchResults);
+
+searchInput.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeSearchResults();
+  if (e.key === "Enter") runSearch();
+});
+searchBtn.addEventListener("click", runSearch);
+
+async function runSearch() {
+  const q = searchInput.value.trim();
+  if (!q) return;
+
+  searchResultsLabel.textContent = "Searching…";
+  searchResultsList.innerHTML = "";
+  searchResults.classList.remove("hidden");
+
+  const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+  if (!res.ok) {
+    searchResultsLabel.textContent = "Search failed.";
+    return;
+  }
+  const data = await res.json();
+
+  if (!data.matches.length) {
+    searchResultsLabel.textContent = `No results for "${q}"`;
+    return;
+  }
+
+  searchResultsLabel.textContent = `${data.matches.length} result(s) for "${q}"`;
+
+  for (const match of data.matches) {
+    // Find the doc node in graphData
+    const docNode = graphData?.nodes.find(n => n.level === 3 && n.file === match.filename);
+
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <div class="result-name">${docNode ? docNode.label : match.filename}</div>
+      <div class="result-snippet">${match.snippet || ""}</div>
+    `;
+
+    li.addEventListener("click", () => {
+      closeSearchResults();
+      if (docNode) {
+        // Navigate to the doc's L2 view, then open the doc panel
+        renderLevel("l2", docNode.l1, docNode.l2);
+        openDoc(docNode.file, docNode.label);
+      }
+    });
+
+    searchResultsList.appendChild(li);
+  }
+}
+
 // ── Quit ──────────────────────────────────────────────────────────────────
 document.getElementById("quit-btn").addEventListener("click", async () => {
   if (!confirm("Stop the server and quit?")) return;

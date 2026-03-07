@@ -10,20 +10,23 @@ Requires data/index.json to exist (run preprocess.py first).
 
 import json
 import os
+import re
 import signal
+import subprocess
 import urllib.parse
 from pathlib import Path
 from typing import Any
 
 import frontmatter
 import markdown as md
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 DATA_DIR = Path("data")
 INDEX_FILE = DATA_DIR / "index.json"
+TEXT_CACHE_DIR = DATA_DIR / ".text_cache"
 STATIC_DIR = Path("static")
 
 app = FastAPI(title="Document Network Viewer")
@@ -102,6 +105,53 @@ def load_index() -> dict[str, Any]:
 def save_index(data: dict[str, Any]) -> None:
     with open(INDEX_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+@app.get("/api/search")
+def search_docs(q: str = Query(..., min_length=1)) -> JSONResponse:
+    """Grep for keyword in .md files and .text_cache/ txt files. Returns matches with snippets."""
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="Empty query.")
+
+    matches: list[dict] = []
+    seen_files: set[str] = set()
+
+    def _grep_file(path: Path, original_filename: str) -> str | None:
+        """Return first matching line snippet, or None if no match."""
+        try:
+            result = subprocess.run(
+                ["grep", "-im", "1", "--", q, str(path)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()[:200]
+        except Exception:
+            pass
+        return None
+
+    # Search .md files directly
+    for md_file in DATA_DIR.glob("*.md"):
+        if md_file.name in seen_files:
+            continue
+        snippet = _grep_file(md_file, md_file.name)
+        if snippet is not None:
+            matches.append({"filename": md_file.name, "snippet": snippet})
+            seen_files.add(md_file.name)
+
+    # Search text cache (covers PDFs and .md duplicates)
+    if TEXT_CACHE_DIR.exists():
+        for txt_file in TEXT_CACHE_DIR.glob("*.txt"):
+            original = txt_file.name[:-4]  # strip ".txt"
+            if original in seen_files:
+                continue
+            snippet = _grep_file(txt_file, original)
+            if snippet is not None:
+                matches.append({"filename": original, "snippet": snippet})
+                seen_files.add(original)
+
+    return JSONResponse({"query": q, "matches": matches})
 
 
 @app.post("/api/quit")
