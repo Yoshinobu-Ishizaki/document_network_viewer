@@ -259,6 +259,124 @@ def build_index(categorized: list[dict]) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
+def split_subcategory(
+    client: Anthropic,
+    l1: str,
+    l2: str,
+    docs: list[dict],
+    categories: list[str],
+) -> list[dict]:
+    """Ask LLM to split an oversized subcategory into two. Returns updated doc list."""
+    docs_str = "\n\n".join(
+        f"[{i + 1}] filename: {d['filename']}\ncontent snippet:\n{d['content']}"
+        for i, d in enumerate(docs)
+    )
+    prompt = f"""You are reorganizing documents within the subcategory "{l2}" (under L1: "{l1}").
+
+Split these {len(docs)} documents into exactly TWO more specific subcategories.
+Give each new subcategory a short name (2-4 words, same language style as "{l2}").
+Assign every document to one of the two new subcategories.
+
+Respond ONLY with a valid JSON array, no extra text:
+[
+  {{"index": 1, "l2": "<new subcategory name>"}},
+  ...
+]
+
+Documents:
+{docs_str}"""
+
+    message = client.messages.create(
+        model=MODEL,
+        max_tokens=2048,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = message.content[0].text.strip()
+    start, end = text.find("["), text.rfind("]") + 1
+    results = json.loads(text[start:end])
+    updated = list(docs)
+    for r in results:
+        updated[r["index"] - 1] = {**updated[r["index"] - 1], "l2": r["l2"]}
+    return updated
+
+
+def apply_constraints(
+    categorized: list[dict],
+    constraints: dict,
+    client: Anthropic,
+    categories: list[str],
+) -> list[dict]:
+    """Enforce max_subcategories / min_docs / max_docs constraints per L1."""
+    if not constraints:
+        return categorized
+
+    max_subcats = constraints.get("max_subcategories", 999)
+    min_docs = constraints.get("min_docs_per_subcategory", 1)
+    max_docs = constraints.get("max_docs_per_subcategory", 9999)
+
+    # Group by l1
+    by_l1: dict[str, list[dict]] = {}
+    for doc in categorized:
+        by_l1.setdefault(doc["l1"], []).append(doc)
+
+    result: list[dict] = []
+    for l1, docs in by_l1.items():
+        # Group by l2
+        def get_groups(docs: list[dict]) -> dict[str, list[dict]]:
+            groups: dict[str, list[dict]] = {}
+            for d in docs:
+                groups.setdefault(d["l2"], []).append(d)
+            return groups
+
+        groups = get_groups(docs)
+
+        # ── Merge small subcategories ─────────────────────────────────────────
+        changed = True
+        while changed:
+            changed = False
+            groups = get_groups(sum(groups.values(), []))
+            small = [l2 for l2, ds in groups.items() if len(ds) < min_docs]
+            if not small or len(groups) <= 1:
+                break
+            for l2_small in small:
+                if l2_small not in groups or len(groups) <= 1:
+                    continue
+                # Find nearest neighbor by keyword similarity
+                kw_small = set()
+                for d in groups[l2_small]:
+                    kw_small |= _keywords(d.get("content", "") + " " + l2_small)
+                best_l2, best_sim = None, -1.0
+                for l2_other, ds_other in groups.items():
+                    if l2_other == l2_small:
+                        continue
+                    kw_other = set()
+                    for d in ds_other:
+                        kw_other |= _keywords(d.get("content", "") + " " + l2_other)
+                    sim = _jaccard(kw_small, kw_other)
+                    if sim > best_sim:
+                        best_sim, best_l2 = sim, l2_other
+                if best_l2 is None:
+                    best_l2 = next(l2 for l2 in groups if l2 != l2_small)
+                print(f"  Merging small subcat '{l2_small}' ({len(groups[l2_small])} docs) → '{best_l2}' in {l1}")
+                for d in groups[l2_small]:
+                    d["l2"] = best_l2
+                del groups[l2_small]
+                changed = True
+
+        # ── Split large subcategories ─────────────────────────────────────────
+        for l2, ds in list(groups.items()):
+            if len(ds) > max_docs and len(groups) < max_subcats:
+                print(f"  Splitting large subcat '{l2}' ({len(ds)} docs) in {l1}")
+                updated = split_subcategory(client, l1, l2, ds, categories)
+                for d_old, d_new in zip(ds, updated):
+                    d_old["l2"] = d_new["l2"]
+                groups = get_groups(sum(groups.values(), []))
+
+        result.extend(sum(groups.values(), []))
+
+    return result
+
+
 def categorize_new_docs(
     client: Anthropic,
     to_process: list[dict],
@@ -305,7 +423,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    categories, _constraints = load_config()
+    categories, constraints = load_config()
     cache = load_cache()
     client = Anthropic()
 
@@ -390,6 +508,10 @@ def main() -> None:
             for path in all_docs
             if path.name in cache
         ]
+
+    if constraints:
+        print("Applying subcategory constraints...")
+        categorized = apply_constraints(categorized, constraints, client, categories)
 
     index = build_index(categorized)
     with open(INDEX_FILE, "w", encoding="utf-8") as f:
