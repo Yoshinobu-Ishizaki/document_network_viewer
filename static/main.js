@@ -45,7 +45,34 @@ async function init() {
     return;
   }
   graphData = await res.json();
+  applyDocCounts(graphData);
   renderLevel("root", null, null);
+}
+
+// ── Document counts ────────────────────────────────────────────────────────
+function applyDocCounts(data) {
+  const l1Count = {};   // l1 label → total doc count
+  const l2Count = {};   // "l1\0l2" → doc count
+
+  for (const n of data.nodes) {
+    if (n.level !== 3) continue;
+    l1Count[n.l1] = (l1Count[n.l1] || 0) + 1;
+    const key = `${n.l1}\0${n.l2}`;
+    l2Count[key] = (l2Count[key] || 0) + 1;
+  }
+
+  for (const n of data.nodes) {
+    if (n.level === 1) {
+      const c = l1Count[n.label] || 0;
+      n._baseLabel = n.label;
+      n.label = `${n.label} (${c})`;
+    } else if (n.level === 2) {
+      const key = `${n.l1}\0${n.label}`;
+      const c = l2Count[key] || 0;
+      n._baseLabel = n.label;
+      n.label = `${n.label} (${c})`;
+    }
+  }
 }
 
 // ── Render helpers ─────────────────────────────────────────────────────────
@@ -63,12 +90,12 @@ function nodesForLevel(level, l1, l2) {
     return { children: graphData.nodes.filter(n => n.level === 1), anchor: null };
   }
   if (level === "l1") {
-    const anchor = graphData.nodes.find(n => n.level === 1 && n.label.startsWith(l1));
+    const anchor = graphData.nodes.find(n => n.level === 1 && (n._baseLabel || n.label) === l1);
     const children = graphData.nodes.filter(n => n.level === 2 && n.l1 === l1);
     return { children, anchor };
   }
   if (level === "l2") {
-    const anchor = graphData.nodes.find(n => n.level === 2 && n.l1 === l1 && n.label.startsWith(l2));
+    const anchor = graphData.nodes.find(n => n.level === 2 && n.l1 === l1 && (n._baseLabel || n.label) === l2);
     const children = graphData.nodes.filter(n => n.level === 3 && n.l1 === l1 && n.l2 === l2);
     return { children, anchor };
   }
@@ -127,10 +154,11 @@ function onNodeDoubleClick(params) {
   if (!node) return;
 
   // Don't drill into the anchor (parent) node shown in the current view
+  // Use _baseLabel (without count) as the routing key
   if (node.level === 1 && currentLevel === "root") {
-    renderLevel("l1", node.label, null);
+    renderLevel("l1", node._baseLabel || node.label, null);
   } else if (node.level === 2 && currentLevel === "l1") {
-    renderLevel("l2", node.l1, node.label);
+    renderLevel("l2", node.l1, node._baseLabel || node.label);
   }
   // level 3 (doc) is handled by single-click
 }
