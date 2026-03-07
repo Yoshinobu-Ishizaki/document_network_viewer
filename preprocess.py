@@ -15,12 +15,15 @@ API calls on subsequent runs.
 import argparse
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
 import frontmatter
 import yaml
-from anthropic import Anthropic
+from dotenv import load_dotenv
+
+load_dotenv()  # reads .env if present; env vars already set take priority
 
 DATA_DIR = Path("data")
 CACHE_FILE = DATA_DIR / ".cache.json"
@@ -28,7 +31,73 @@ INDEX_FILE = DATA_DIR / "index.json"
 CONFIG_FILE = Path("config.yaml")
 
 BATCH_SIZE = 20
-MODEL = "claude-haiku-4-5-20251001"
+
+
+# ── LLM provider abstraction ────────────────────────────────────────────────
+
+class LLMClient:
+    """Thin wrapper around LLM provider APIs with a uniform chat() interface."""
+
+    def __init__(self) -> None:
+        self.provider = os.environ.get("LLM_PROVIDER", "anthropic").lower()
+
+        if self.provider == "anthropic":
+            from anthropic import Anthropic as _Anthropic
+            self.model = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+            self._client = _Anthropic()
+
+        elif self.provider == "openai":
+            try:
+                from openai import OpenAI as _OpenAI
+            except ImportError:
+                sys.exit("OpenAI provider requires the 'openai' package: uv add openai")
+            self.model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+            self._client = _OpenAI()
+
+        elif self.provider == "gemini":
+            try:
+                import google.generativeai as genai  # type: ignore
+            except ImportError:
+                sys.exit(
+                    "Gemini provider requires the 'google-generativeai' package: "
+                    "uv add google-generativeai"
+                )
+            self.model = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
+            api_key = os.environ.get("GEMINI_API_KEY")
+            if not api_key:
+                sys.exit("GEMINI_API_KEY is not set. Add it to .env or your environment.")
+            genai.configure(api_key=api_key)
+            self._genai = genai
+            self._client = None  # Gemini uses module-level calls
+
+        else:
+            sys.exit(f"Unknown LLM_PROVIDER '{self.provider}'. Use: anthropic | openai | gemini")
+
+        print(f"Using LLM provider: {self.provider} / {self.model}")
+
+    def chat(self, prompt: str, max_tokens: int = 2048) -> str:
+        if self.provider == "anthropic":
+            msg = self._client.messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return msg.content[0].text.strip()
+
+        elif self.provider == "openai":
+            resp = self._client.chat.completions.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return resp.choices[0].message.content.strip()
+
+        elif self.provider == "gemini":
+            model = self._genai.GenerativeModel(self.model)
+            resp = model.generate_content(prompt)
+            return resp.text.strip()
+
+        raise RuntimeError(f"Unsupported provider: {self.provider}")
 
 
 def load_config() -> tuple[list[str], dict]:
@@ -89,11 +158,11 @@ def read_document(path: Path) -> str:
 
 
 def categorize_batch(
-    client: Anthropic,
+    client: LLMClient,
     docs: list[dict],
     categories: list[str],
 ) -> list[dict]:
-    """Call Claude to assign L1 + generate L2 categories for a batch of documents."""
+    """Call LLM to assign L1 + generate L2 categories for a batch of documents."""
     categories_str = "\n".join(f"- {c}" for c in categories)
     docs_str = "\n\n".join(
         f"[{i + 1}] filename: {d['filename']}\ncontent snippet:\n{d['content']}"
@@ -118,13 +187,7 @@ Respond ONLY with a valid JSON array, no extra text:
 Documents:
 {docs_str}"""
 
-    message = client.messages.create(
-        model=MODEL,
-        max_tokens=2048,
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    text = message.content[0].text.strip()
+    text = client.chat(prompt)
     start = text.find("[")
     end = text.rfind("]") + 1
     return json.loads(text[start:end])
@@ -260,7 +323,7 @@ def build_index(categorized: list[dict]) -> dict:
 
 
 def split_subcategory(
-    client: Anthropic,
+    client: LLMClient,
     l1: str,
     l2: str,
     docs: list[dict],
@@ -286,12 +349,7 @@ Respond ONLY with a valid JSON array, no extra text:
 Documents:
 {docs_str}"""
 
-    message = client.messages.create(
-        model=MODEL,
-        max_tokens=2048,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    text = message.content[0].text.strip()
+    text = client.chat(prompt)
     start, end = text.find("["), text.rfind("]") + 1
     results = json.loads(text[start:end])
     updated = list(docs)
@@ -303,7 +361,7 @@ Documents:
 def apply_constraints(
     categorized: list[dict],
     constraints: dict,
-    client: Anthropic,
+    client: LLMClient,
     categories: list[str],
 ) -> list[dict]:
     """Enforce max_subcategories / min_docs / max_docs constraints per L1."""
@@ -378,7 +436,7 @@ def apply_constraints(
 
 
 def categorize_new_docs(
-    client: Anthropic,
+    client: LLMClient,
     to_process: list[dict],
     categories: list[str],
     cache: dict,
@@ -425,7 +483,7 @@ def main() -> None:
 
     categories, constraints = load_config()
     cache = load_cache()
-    client = Anthropic()
+    client = LLMClient()
 
     all_docs = scan_documents()
     if not all_docs:
