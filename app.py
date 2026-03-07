@@ -106,7 +106,7 @@ def save_index(data: dict[str, Any]) -> None:
 
 @app.post("/api/quit")
 def quit_server() -> JSONResponse:
-    os.kill(os.getpid(), signal.SIGTERM)
+    os.killpg(os.getpgid(os.getpid()), signal.SIGTERM)
     return JSONResponse({"status": "shutting down"})
 
 
