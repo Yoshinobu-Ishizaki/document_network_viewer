@@ -1,0 +1,190 @@
+/**
+ * Document Network Viewer — main.js
+ *
+ * Drill-down graph: All L1 → click L1 → its L2s → click L2 → its docs → click doc → side panel
+ * Breadcrumb lets you navigate back up at any level.
+ */
+
+// ── State ──────────────────────────────────────────────────────────────────
+let graphData = null;          // full data/index.json
+let network = null;            // vis.js Network instance
+let currentLevel = "root";     // "root" | "l1" | "l2"
+let currentL1 = null;
+let currentL2 = null;
+
+// ── vis.js visual options ──────────────────────────────────────────────────
+const LEVEL_STYLES = {
+  1: { color: { background: "#3b82f6", border: "#1d4ed8", highlight: { background: "#2563eb", border: "#1e40af" } }, font: { color: "#ffffff", size: 15, face: "sans-serif" }, shape: "ellipse", size: 28 },
+  2: { color: { background: "#8b5cf6", border: "#6d28d9", highlight: { background: "#7c3aed", border: "#5b21b6" } }, font: { color: "#ffffff", size: 13, face: "sans-serif" }, shape: "ellipse", size: 22 },
+  3: { color: { background: "#ffffff", border: "#94a3b8", highlight: { background: "#f0f9ff", border: "#3b82f6" } }, font: { color: "#1e2229", size: 12, face: "sans-serif" }, shape: "box", size: 16 },
+};
+
+const NETWORK_OPTIONS = {
+  physics: {
+    enabled: true,
+    solver: "forceAtlas2Based",
+    forceAtlas2Based: { gravitationalConstant: -60, centralGravity: 0.01, springLength: 120, springConstant: 0.08 },
+    stabilization: { iterations: 150 },
+  },
+  interaction: { hover: true, tooltipDelay: 200 },
+  edges: {
+    color: { color: "#cbd5e1", highlight: "#94a3b8" },
+    width: 1.5,
+    smooth: { type: "continuous" },
+    arrows: { to: { enabled: false } },
+  },
+  nodes: { borderWidth: 2 },
+};
+
+// ── Initialise ─────────────────────────────────────────────────────────────
+async function init() {
+  const res = await fetch("/api/graph");
+  if (!res.ok) {
+    document.getElementById("graph").innerHTML =
+      `<p style="padding:20px;color:#ef4444">Failed to load graph data.<br>Run <code>uv run preprocess.py</code> first.</p>`;
+    return;
+  }
+  graphData = await res.json();
+  renderLevel("root", null, null);
+}
+
+// ── Render helpers ─────────────────────────────────────────────────────────
+function nodesForLevel(level, l1, l2) {
+  if (level === "root") {
+    return graphData.nodes.filter(n => n.level === 1);
+  }
+  if (level === "l1") {
+    return graphData.nodes.filter(n => n.level === 2 && n.l1 === l1);
+  }
+  if (level === "l2") {
+    return graphData.nodes.filter(n => n.level === 3 && n.l1 === l1 && n.l2 === l2);
+  }
+  return [];
+}
+
+function edgesForNodes(nodeIds) {
+  const idSet = new Set(nodeIds);
+  return graphData.edges.filter(e => idSet.has(e.from) && idSet.has(e.to));
+}
+
+function styledNodes(nodes) {
+  return nodes.map(n => {
+    const style = LEVEL_STYLES[n.level] || {};
+    return { ...n, ...style };
+  });
+}
+
+function renderLevel(level, l1, l2) {
+  currentLevel = level;
+  currentL1 = l1;
+  currentL2 = l2;
+
+  const nodes = nodesForLevel(level, l1, l2);
+  const nodeIds = nodes.map(n => n.id);
+  const edges = edgesForNodes(nodeIds);
+
+  const dataset = {
+    nodes: new vis.DataSet(styledNodes(nodes)),
+    edges: new vis.DataSet(edges),
+  };
+
+  const container = document.getElementById("graph");
+
+  if (network) {
+    network.setData(dataset);
+  } else {
+    network = new vis.Network(container, dataset, NETWORK_OPTIONS);
+    network.on("doubleClick", onNodeDoubleClick);
+    network.on("click", onNodeClick);
+  }
+
+  updateBreadcrumb(level, l1, l2);
+}
+
+// ── Interaction ────────────────────────────────────────────────────────────
+function onNodeDoubleClick(params) {
+  if (!params.nodes.length) return;
+  const nodeId = params.nodes[0];
+  const node = graphData.nodes.find(n => n.id === nodeId);
+  if (!node) return;
+
+  if (node.level === 1) {
+    renderLevel("l1", node.label, null);
+  } else if (node.level === 2) {
+    renderLevel("l2", node.l1, node.label);
+  }
+  // level 3 (doc) is handled by single-click
+}
+
+function onNodeClick(params) {
+  if (!params.nodes.length) return;
+  const nodeId = params.nodes[0];
+  const node = graphData.nodes.find(n => n.id === nodeId);
+  if (!node) return;
+
+  if (node.level === 3 && node.file) {
+    openDoc(node.file, node.label);
+  }
+}
+
+// ── Doc panel ─────────────────────────────────────────────────────────────
+async function openDoc(filename, title) {
+  const panel = document.getElementById("doc-panel");
+  const titleEl = document.getElementById("doc-title");
+  const contentEl = document.getElementById("doc-content");
+
+  titleEl.textContent = title;
+  contentEl.innerHTML = "<p style='color:#6b7280'>Loading…</p>";
+  panel.classList.remove("hidden");
+
+  const res = await fetch(`/api/doc/${encodeURIComponent(filename)}`);
+  if (!res.ok) {
+    contentEl.innerHTML = `<p style='color:#ef4444'>Failed to load document.</p>`;
+    return;
+  }
+  const data = await res.json();
+  titleEl.textContent = data.title || title;
+  contentEl.innerHTML = data.html;
+}
+
+document.getElementById("doc-close").addEventListener("click", () => {
+  document.getElementById("doc-panel").classList.add("hidden");
+});
+
+// ── Breadcrumb ────────────────────────────────────────────────────────────
+function updateBreadcrumb(level, l1, l2) {
+  const bc = document.getElementById("breadcrumb");
+  bc.innerHTML = "";
+
+  function crumb(label, onClick, active) {
+    const span = document.createElement("span");
+    span.className = "crumb" + (active ? " active" : "");
+    span.textContent = label;
+    if (!active) span.addEventListener("click", onClick);
+    return span;
+  }
+
+  function sep() {
+    const s = document.createElement("span");
+    s.className = "crumb-sep";
+    s.textContent = "›";
+    return s;
+  }
+
+  if (level === "root") {
+    bc.appendChild(crumb("All", null, true));
+  } else if (level === "l1") {
+    bc.appendChild(crumb("All", () => renderLevel("root", null, null), false));
+    bc.appendChild(sep());
+    bc.appendChild(crumb(l1, null, true));
+  } else if (level === "l2") {
+    bc.appendChild(crumb("All", () => renderLevel("root", null, null), false));
+    bc.appendChild(sep());
+    bc.appendChild(crumb(l1, () => renderLevel("l1", l1, null), false));
+    bc.appendChild(sep());
+    bc.appendChild(crumb(l2, null, true));
+  }
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────
+init();

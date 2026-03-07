@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Document Network Viewer</title>
+  <link rel="stylesheet" href="/style.css" />
+  <!-- vis.js Network (CDN) -->
+  <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+</head>
+<body>
+  <header>
+    <div id="breadcrumb">
+      <span class="crumb active" data-level="root">All</span>
+    </div>
+    <h1>Document Network Viewer</h1>
+  </header>
+
+  <main>
+    <div id="graph-container">
+      <div id="graph"></div>
+    </div>
+
+    <div id="doc-panel" class="hidden">
+      <div id="doc-panel-header">
+        <span id="doc-title"></span>
+        <button id="doc-close" title="Close">&times;</button>
+      </div>
+      <div id="doc-content"></div>
+    </div>
+  </main>
+
+  <script src="/main.js"></script>
+</body>
+</html>

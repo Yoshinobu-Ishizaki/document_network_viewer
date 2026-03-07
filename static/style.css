@@ -1,0 +1,181 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --header-h: 52px;
+  --panel-w: 420px;
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --border: #dde1e7;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --text: #1e2229;
+  --text-muted: #6b7280;
+  --radius: 8px;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Header ── */
+header {
+  height: var(--header-h);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 20px;
+  flex-shrink: 0;
+}
+
+header h1 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+#breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.875rem;
+}
+
+.crumb {
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.crumb:hover { color: var(--accent); text-decoration: underline; }
+.crumb.active { color: var(--text); font-weight: 600; cursor: default; }
+.crumb.active:hover { text-decoration: none; color: var(--text); }
+
+.crumb-sep { color: var(--text-muted); user-select: none; }
+
+/* ── Main layout ── */
+main {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+#graph-container {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+#graph {
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Doc panel ── */
+#doc-panel {
+  width: var(--panel-w);
+  flex-shrink: 0;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: width 0.2s ease;
+}
+
+#doc-panel.hidden {
+  width: 0;
+  border-left: none;
+}
+
+#doc-panel-header {
+  height: var(--header-h);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+#doc-title {
+  flex: 1;
+  font-weight: 600;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#doc-close {
+  background: none;
+  border: none;
+  font-size: 1.4rem;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+#doc-close:hover { background: var(--bg); color: var(--text); }
+
+#doc-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  font-size: 0.875rem;
+  line-height: 1.7;
+}
+
+/* Markdown styles inside doc panel */
+#doc-content h1, #doc-content h2, #doc-content h3 {
+  margin: 1.2em 0 0.4em;
+  line-height: 1.3;
+}
+#doc-content h1 { font-size: 1.3rem; }
+#doc-content h2 { font-size: 1.1rem; }
+#doc-content h3 { font-size: 1rem; }
+#doc-content p { margin-bottom: 0.8em; }
+#doc-content ul, #doc-content ol { padding-left: 1.4em; margin-bottom: 0.8em; }
+#doc-content li { margin-bottom: 0.2em; }
+#doc-content code {
+  background: var(--bg);
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+  font-size: 0.85em;
+  font-family: "SFMono-Regular", Consolas, monospace;
+}
+#doc-content pre {
+  background: var(--bg);
+  padding: 12px;
+  border-radius: var(--radius);
+  overflow-x: auto;
+  margin-bottom: 0.8em;
+}
+#doc-content pre code { background: none; padding: 0; }
+#doc-content table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-bottom: 0.8em;
+  font-size: 0.85rem;
+}
+#doc-content th, #doc-content td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+}
+#doc-content th { background: var(--bg); font-weight: 600; }
+#doc-content a { color: var(--accent); }
+#doc-content hr { border: none; border-top: 1px solid var(--border); margin: 1em 0; }
+#doc-content blockquote {
+  border-left: 3px solid var(--border);
+  margin: 0 0 0.8em;
+  padding: 0.2em 0.8em;
+  color: var(--text-muted);
+}
