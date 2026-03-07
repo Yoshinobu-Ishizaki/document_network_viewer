@@ -49,17 +49,30 @@ async function init() {
 }
 
 // ── Render helpers ─────────────────────────────────────────────────────────
+
+// Style for the anchor (parent) node shown in drill-down views — dimmed, fixed
+const ANCHOR_STYLE = {
+  color: { background: "#e2e8f0", border: "#94a3b8", highlight: { background: "#e2e8f0", border: "#94a3b8" } },
+  font: { color: "#94a3b8", size: 13, face: "sans-serif" },
+  fixed: true,
+  physics: false,
+};
+
 function nodesForLevel(level, l1, l2) {
   if (level === "root") {
-    return graphData.nodes.filter(n => n.level === 1);
+    return { children: graphData.nodes.filter(n => n.level === 1), anchor: null };
   }
   if (level === "l1") {
-    return graphData.nodes.filter(n => n.level === 2 && n.l1 === l1);
+    const anchor = graphData.nodes.find(n => n.level === 1 && n.label.startsWith(l1));
+    const children = graphData.nodes.filter(n => n.level === 2 && n.l1 === l1);
+    return { children, anchor };
   }
   if (level === "l2") {
-    return graphData.nodes.filter(n => n.level === 3 && n.l1 === l1 && n.l2 === l2);
+    const anchor = graphData.nodes.find(n => n.level === 2 && n.l1 === l1 && n.label.startsWith(l2));
+    const children = graphData.nodes.filter(n => n.level === 3 && n.l1 === l1 && n.l2 === l2);
+    return { children, anchor };
   }
-  return [];
+  return { children: [], anchor: null };
 }
 
 function edgesForNodes(nodeIds) {
@@ -67,8 +80,11 @@ function edgesForNodes(nodeIds) {
   return graphData.edges.filter(e => idSet.has(e.from) && idSet.has(e.to));
 }
 
-function styledNodes(nodes) {
+function styledNodes(nodes, anchorId) {
   return nodes.map(n => {
+    if (n.id === anchorId) {
+      return { ...n, ...ANCHOR_STYLE, shape: "ellipse" };
+    }
     const style = LEVEL_STYLES[n.level] || {};
     return { ...n, ...style };
   });
@@ -79,12 +95,13 @@ function renderLevel(level, l1, l2) {
   currentL1 = l1;
   currentL2 = l2;
 
-  const nodes = nodesForLevel(level, l1, l2);
-  const nodeIds = nodes.map(n => n.id);
+  const { children, anchor } = nodesForLevel(level, l1, l2);
+  const allNodes = anchor ? [anchor, ...children] : children;
+  const nodeIds = allNodes.map(n => n.id);
   const edges = edgesForNodes(nodeIds);
 
   const dataset = {
-    nodes: new vis.DataSet(styledNodes(nodes)),
+    nodes: new vis.DataSet(styledNodes(allNodes, anchor?.id)),
     edges: new vis.DataSet(edges),
   };
 
@@ -96,6 +113,7 @@ function renderLevel(level, l1, l2) {
     network = new vis.Network(container, dataset, NETWORK_OPTIONS);
     network.on("doubleClick", onNodeDoubleClick);
     network.on("click", onNodeClick);
+    network.on("oncontext", onNodeRightClick);
   }
 
   updateBreadcrumb(level, l1, l2);
@@ -108,9 +126,10 @@ function onNodeDoubleClick(params) {
   const node = graphData.nodes.find(n => n.id === nodeId);
   if (!node) return;
 
-  if (node.level === 1) {
+  // Don't drill into the anchor (parent) node shown in the current view
+  if (node.level === 1 && currentLevel === "root") {
     renderLevel("l1", node.label, null);
-  } else if (node.level === 2) {
+  } else if (node.level === 2 && currentLevel === "l1") {
     renderLevel("l2", node.l1, node.label);
   }
   // level 3 (doc) is handled by single-click
