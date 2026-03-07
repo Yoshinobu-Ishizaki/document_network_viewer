@@ -13,7 +13,9 @@ import os
 import re
 import signal
 import subprocess
+import threading
 import urllib.parse
+import webbrowser
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +32,21 @@ TEXT_CACHE_DIR = DATA_DIR / ".text_cache"
 STATIC_DIR = Path("static")
 
 app = FastAPI(title="Document Network Viewer")
+
+
+@app.on_event("startup")
+async def open_browser() -> None:
+    """Open the browser once when the server first starts (not on every hot reload)."""
+    if os.environ.get("_APP_BROWSER_OPENED"):
+        return
+    os.environ["_APP_BROWSER_OPENED"] = "1"
+
+    def _open() -> None:
+        import time
+        time.sleep(0.5)
+        webbrowser.open("http://localhost:8000")
+
+    threading.Thread(target=_open, daemon=True).start()
 
 
 @app.get("/api/graph")
@@ -172,14 +189,18 @@ def rename_subcategory(req: RenameRequest) -> JSONResponse:
 
     data = load_index()
 
-    # Rename the L2 node itself
+    found = False
     for node in data["nodes"]:
         if node.get("level") == 2 and node.get("l1") == req.l1 and node.get("label") == req.old_l2:
             node["label"] = new_l2
             node["id"] = f"l2:{req.l1}:{new_l2}"
+            found = True
         # Update doc nodes that belonged to old L2
         elif node.get("level") == 3 and node.get("l1") == req.l1 and node.get("l2") == req.old_l2:
             node["l2"] = new_l2
+
+    if not found:
+        raise HTTPException(status_code=404, detail=f"Subcategory '{req.old_l2}' not found in '{req.l1}'.")
 
     # Update edges pointing to/from old L2 node id
     old_id = f"l2:{req.l1}:{req.old_l2}"

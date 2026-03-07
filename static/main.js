@@ -320,6 +320,11 @@ document.getElementById("ctx-rename").addEventListener("click", async () => {
     body: JSON.stringify({ l1: contextNode.l1, old_l2: oldName, new_l2: newName.trim() }),
   });
   if (!res.ok) { alert("Rename failed."); return; }
+  // If the renamed node was the current L2 anchor, update currentL2 so
+  // reloadGraph can still find the view after the name change.
+  if (currentLevel === "l2" && currentL2 === oldName) {
+    currentL2 = newName.trim();
+  }
   await reloadGraph();
 });
 
@@ -422,9 +427,9 @@ async function runSearch() {
     `;
 
     li.addEventListener("click", () => {
-      closeSearchResults();
       if (docNode) {
-        // Navigate to the doc's L2 view, then open the doc panel
+        // Navigate to the doc's L2 view, then open the doc panel.
+        // Keep the search panel and input visible.
         renderLevel("l2", docNode.l1, docNode.l2);
         openDoc(docNode.file, docNode.label);
       }
@@ -438,6 +443,8 @@ async function runSearch() {
 document.getElementById("quit-btn").addEventListener("click", async () => {
   if (!confirm("Stop the server and quit?")) return;
   await fetch("/api/quit", { method: "POST" }).catch(() => {});
+  window.close();
+  // Fallback message if the browser blocked window.close() (user-opened tabs):
   document.body.innerHTML =
     `<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;color:#6b7280;">
       <p>Server stopped. You can close this tab.</p>
