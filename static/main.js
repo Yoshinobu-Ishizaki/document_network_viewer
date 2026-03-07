@@ -233,6 +233,98 @@ function updateBreadcrumb(level, l1, l2) {
   }
 }
 
+// ── Rename / Merge subcategories ──────────────────────────────────────────
+let contextNode = null;  // L2 node currently targeted by right-click menu
+
+const ctxMenu = document.getElementById("context-menu");
+const mergeOverlay = document.getElementById("merge-overlay");
+
+function hideContextMenu() {
+  ctxMenu.classList.add("hidden");
+  contextNode = null;
+}
+
+function onNodeRightClick(params) {
+  params.event.preventDefault();
+  hideContextMenu();
+
+  if (!params.nodes.length) return;
+  const node = graphData.nodes.find(n => n.id === params.nodes[0]);
+  if (!node || node.level !== 2) return;
+
+  contextNode = node;
+  ctxMenu.style.left = `${params.event.clientX}px`;
+  ctxMenu.style.top  = `${params.event.clientY}px`;
+  ctxMenu.classList.remove("hidden");
+}
+
+document.addEventListener("click", (e) => {
+  if (!ctxMenu.contains(e.target)) hideContextMenu();
+});
+
+document.getElementById("ctx-rename").addEventListener("click", async () => {
+  if (!contextNode) return;
+  const oldName = contextNode._baseLabel || contextNode.label;
+  hideContextMenu();
+
+  const newName = prompt(`Rename "${oldName}" to:`, oldName);
+  if (!newName || newName.trim() === oldName) return;
+
+  const res = await fetch("/api/subcategory", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ l1: contextNode.l1, old_l2: oldName, new_l2: newName.trim() }),
+  });
+  if (!res.ok) { alert("Rename failed."); return; }
+  await reloadGraph();
+});
+
+document.getElementById("ctx-merge").addEventListener("click", () => {
+  if (!contextNode) return;
+  const sourceName = contextNode._baseLabel || contextNode.label;
+  const sourceL1 = contextNode.l1;
+  hideContextMenu();
+
+  // Build list of other L2 nodes in the same L1
+  const others = graphData.nodes.filter(n =>
+    n.level === 2 && n.l1 === sourceL1 && (n._baseLabel || n.label) !== sourceName
+  );
+  if (!others.length) { alert("No other subcategories to merge into."); return; }
+
+  document.getElementById("merge-source-label").textContent = sourceName;
+  const sel = document.getElementById("merge-target-select");
+  sel.innerHTML = others.map(n => {
+    const base = n._baseLabel || n.label;
+    return `<option value="${base}">${base}</option>`;
+  }).join("");
+
+  mergeOverlay.classList.remove("hidden");
+
+  document.getElementById("merge-confirm").onclick = async () => {
+    const targetName = sel.value;
+    mergeOverlay.classList.add("hidden");
+    const res = await fetch("/api/subcategory/merge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ l1: sourceL1, source_l2: sourceName, target_l2: targetName }),
+    });
+    if (!res.ok) { alert("Merge failed."); return; }
+    await reloadGraph();
+  };
+});
+
+document.getElementById("merge-cancel").addEventListener("click", () => {
+  mergeOverlay.classList.add("hidden");
+});
+
+async function reloadGraph() {
+  const res = await fetch("/api/graph");
+  if (!res.ok) return;
+  graphData = await res.json();
+  applyDocCounts(graphData);
+  renderLevel(currentLevel, currentL1, currentL2);
+}
+
 // ── Quit ──────────────────────────────────────────────────────────────────
 document.getElementById("quit-btn").addEventListener("click", async () => {
   if (!confirm("Stop the server and quit?")) return;
