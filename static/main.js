@@ -186,5 +186,15 @@ function updateBreadcrumb(level, l1, l2) {
   }
 }
 
+// ── Quit ──────────────────────────────────────────────────────────────────
+document.getElementById("quit-btn").addEventListener("click", async () => {
+  if (!confirm("Stop the server and quit?")) return;
+  await fetch("/api/quit", { method: "POST" }).catch(() => {});
+  document.body.innerHTML =
+    `<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;color:#6b7280;">
+      <p>Server stopped. You can close this tab.</p>
+    </div>`;
+});
+
 // ── Boot ──────────────────────────────────────────────────────────────────
 init();

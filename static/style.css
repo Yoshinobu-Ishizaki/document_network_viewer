@@ -42,6 +42,19 @@ header h1 {
   margin-left: auto;
 }
 
+#quit-btn {
+  margin-left: 12px;
+  padding: 5px 14px;
+  background: none;
+  border: 1px solid #e5534b;
+  color: #e5534b;
+  border-radius: 5px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  font-weight: 500;
+}
+#quit-btn:hover { background: #fef2f2; }
+
 #breadcrumb {
   display: flex;
   align-items: center;

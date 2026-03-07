@@ -14,12 +14,33 @@
       <span class="crumb active" data-level="root">All</span>
     </div>
     <h1>Document Network Viewer</h1>
+    <button id="quit-btn" title="Stop server and quit">Quit</button>
   </header>
+
+  <!-- Context menu for L2 nodes -->
+  <div id="context-menu" class="hidden">
+    <button id="ctx-rename">Rename subcategory</button>
+    <button id="ctx-merge">Merge into…</button>
+  </div>
+
+  <!-- Merge dialog -->
+  <div id="merge-overlay" class="hidden">
+    <div id="merge-dialog">
+      <h3>Merge "<span id="merge-source-label"></span>" into…</h3>
+      <select id="merge-target-select"></select>
+      <div id="merge-actions">
+        <button id="merge-confirm">Merge</button>
+        <button id="merge-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
 
   <main>
     <div id="graph-container">
       <div id="graph"></div>
     </div>
+
+    <div id="resize-handle" class="hidden" title="Drag to resize"></div>
 
     <div id="doc-panel" class="hidden">
       <div id="doc-panel-header">
