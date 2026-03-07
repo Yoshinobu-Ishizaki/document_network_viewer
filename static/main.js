@@ -90,9 +90,9 @@ function nodesForLevel(level, l1, l2) {
     return { children: graphData.nodes.filter(n => n.level === 1), anchor: null };
   }
   if (level === "l1") {
-    const anchor = graphData.nodes.find(n => n.level === 1 && (n._baseLabel || n.label) === l1);
+    // No anchor: L2 nodes connect to each other via semantic edges
     const children = graphData.nodes.filter(n => n.level === 2 && n.l1 === l1);
-    return { children, anchor };
+    return { children, anchor: null };
   }
   if (level === "l2") {
     const anchor = graphData.nodes.find(n => n.level === 2 && n.l1 === l1 && (n._baseLabel || n.label) === l2);
@@ -104,7 +104,9 @@ function nodesForLevel(level, l1, l2) {
 
 function edgesForNodes(nodeIds) {
   const idSet = new Set(nodeIds);
-  return graphData.edges.filter(e => idSet.has(e.from) && idSet.has(e.to));
+  return graphData.edges
+    .filter(e => idSet.has(e.from) && idSet.has(e.to))
+    .map(e => e.width != null ? { ...e, width: e.width } : e);
 }
 
 function styledNodes(nodes, anchorId) {
