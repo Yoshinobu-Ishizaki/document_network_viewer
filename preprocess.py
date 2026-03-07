@@ -12,6 +12,7 @@ Results are cached in data/.cache.json — only changed files trigger new
 API calls on subsequent runs.
 """
 
+import argparse
 import hashlib
 import json
 import sys
@@ -30,10 +31,28 @@ BATCH_SIZE = 20
 MODEL = "claude-haiku-4-5-20251001"
 
 
-def load_config() -> list[str]:
+def load_config() -> tuple[list[str], dict]:
     with open(CONFIG_FILE) as f:
         config = yaml.safe_load(f)
-    return config["categories"]
+    categories = config["categories"]
+    constraints = config.get("subcategory_constraints", {})
+    return categories, constraints
+
+
+def load_index() -> dict | None:
+    if INDEX_FILE.exists():
+        with open(INDEX_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    return None
+
+
+def index_doc_assignments(index: dict) -> dict[str, dict]:
+    """Return filename -> {l1, l2} from existing index.json (preserves UI edits)."""
+    result = {}
+    for node in index["nodes"]:
+        if node.get("level") == 3 and node.get("file"):
+            result[node["file"]] = {"l1": node["l1"], "l2": node["l2"]}
+    return result
 
 
 def load_cache() -> dict:
@@ -240,8 +259,53 @@ def build_index(categorized: list[dict]) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
+def categorize_new_docs(
+    client: Anthropic,
+    to_process: list[dict],
+    categories: list[str],
+    cache: dict,
+) -> None:
+    """Call LLM for uncached/changed docs and update cache in-place."""
+    print(f"Categorizing {len(to_process)} document(s) via Claude API...")
+    for i in range(0, len(to_process), BATCH_SIZE):
+        batch = to_process[i : i + BATCH_SIZE]
+        print(f"  Batch {i // BATCH_SIZE + 1} ({len(batch)} docs)...")
+        results = categorize_batch(client, batch, categories)
+        for r in results:
+            doc = batch[r["index"] - 1]
+            cache[doc["filename"]] = {
+                "hash": doc["hash"],
+                "l1": r["l1"],
+                "l2": r["l2"],
+                "content": doc["content"],
+            }
+    save_cache(cache)
+    print("Cache saved.")
+
+
+def backfill_content(cache: dict, all_docs: list[Path]) -> None:
+    """Ensure every cache entry has a content field (back-compat)."""
+    updated = False
+    for path in all_docs:
+        entry = cache.get(path.name, {})
+        if entry and "content" not in entry:
+            entry["content"] = read_document(path)
+            cache[path.name] = entry
+            updated = True
+    if updated:
+        save_cache(cache)
+
+
 def main() -> None:
-    categories = load_config()
+    parser = argparse.ArgumentParser(description="Preprocess documents into data/index.json")
+    parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="Ignore existing index.json and rebuild from scratch (clears UI renames/merges)",
+    )
+    args = parser.parse_args()
+
+    categories, _constraints = load_config()
     cache = load_cache()
     client = Anthropic()
 
@@ -250,8 +314,9 @@ def main() -> None:
         print("No documents found in data/")
         sys.exit(1)
 
-    print(f"Found {len(all_docs)} documents.")
+    print(f"Found {len(all_docs)} document(s).")
 
+    # ── Determine which files need LLM categorization ─────────────────────────
     to_process = []
     for path in all_docs:
         h = file_hash(path)
@@ -260,41 +325,71 @@ def main() -> None:
             to_process.append({"filename": path.name, "content": content, "hash": h})
 
     if to_process:
-        print(f"Categorizing {len(to_process)} documents via Claude API...")
-        for i in range(0, len(to_process), BATCH_SIZE):
-            batch = to_process[i : i + BATCH_SIZE]
-            print(f"  Batch {i // BATCH_SIZE + 1} ({len(batch)} docs)...")
-            results = categorize_batch(client, batch, categories)
-            for r in results:
-                doc = batch[r["index"] - 1]
-                cache[doc["filename"]] = {
-                    "hash": doc["hash"],
-                    "l1": r["l1"],
-                    "l2": r["l2"],
-                    "content": doc["content"],
-                }
-        save_cache(cache)
-        print("Cache saved.")
+        categorize_new_docs(client, to_process, categories, cache)
     else:
         print("All documents already cached, skipping API calls.")
 
-    # Back-fill content for cache entries that predate the content field
-    for path in all_docs:
-        entry = cache.get(path.name, {})
-        if "content" not in entry:
-            entry["content"] = read_document(path)
-            cache[path.name] = entry
+    backfill_content(cache, all_docs)
 
-    categorized = [
-        {
-            "filename": path.name,
-            "l1": cache[path.name]["l1"],
-            "l2": cache[path.name]["l2"],
-            "content": cache[path.name].get("content", ""),
-        }
-        for path in all_docs
-        if path.name in cache
-    ]
+    # ── Build categorized list, preserving UI edits in incremental mode ───────
+    existing_index = None if args.rebuild else load_index()
+
+    if existing_index and not args.rebuild:
+        # Incremental: use current index.json assignments (which may have been
+        # renamed/merged via the UI), only apply cache for *new* files.
+        ui_assignments = index_doc_assignments(existing_index)
+        new_filenames = {d["filename"] for d in to_process}
+
+        categorized = []
+        for path in all_docs:
+            if path.name not in cache:
+                continue
+            if path.name in new_filenames:
+                # New file — use fresh LLM assignment from cache
+                entry = cache[path.name]
+                categorized.append({
+                    "filename": path.name,
+                    "l1": entry["l1"],
+                    "l2": entry["l2"],
+                    "content": entry.get("content", ""),
+                })
+            elif path.name in ui_assignments:
+                # Existing file — use UI assignment to preserve renames/merges
+                ui = ui_assignments[path.name]
+                categorized.append({
+                    "filename": path.name,
+                    "l1": ui["l1"],
+                    "l2": ui["l2"],
+                    "content": cache[path.name].get("content", ""),
+                })
+            else:
+                # In cache but not in index (e.g. index was manually edited) — use cache
+                entry = cache[path.name]
+                categorized.append({
+                    "filename": path.name,
+                    "l1": entry["l1"],
+                    "l2": entry["l2"],
+                    "content": entry.get("content", ""),
+                })
+
+        new_count = len(new_filenames & {p.name for p in all_docs})
+        if new_count:
+            print(f"Incremental mode: added {new_count} new document(s), preserving existing categorization.")
+        else:
+            print("Incremental mode: no new documents found. Re-computing edges from current index.")
+    else:
+        if args.rebuild:
+            print("Rebuild mode: regenerating index from cache (UI renames/merges will be reset).")
+        categorized = [
+            {
+                "filename": path.name,
+                "l1": cache[path.name]["l1"],
+                "l2": cache[path.name]["l2"],
+                "content": cache[path.name].get("content", ""),
+            }
+            for path in all_docs
+            if path.name in cache
+        ]
 
     index = build_index(categorized)
     with open(INDEX_FILE, "w", encoding="utf-8") as f:
