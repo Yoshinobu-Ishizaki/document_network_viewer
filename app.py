@@ -116,14 +116,18 @@ def search_docs(q: str = Query(..., min_length=1)) -> JSONResponse:
     matches: list[dict] = []
     seen_files: set[str] = set()
 
+    _grep_env = {**os.environ, "LC_ALL": "C.UTF-8", "LANG": "C.UTF-8"}
+
     def _grep_file(path: Path, original_filename: str) -> str | None:
         """Return first matching line snippet, or None if no match."""
         try:
             result = subprocess.run(
                 ["grep", "-im", "1", "--", q, str(path)],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
+                env=_grep_env,
             )
             if result.returncode == 0:
                 return result.stdout.strip()[:200]

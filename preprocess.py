@@ -187,7 +187,7 @@ Top-level categories (L1) — you MUST pick exactly one per document:
 
 For each document, assign:
 1. l1: The best matching L1 category (must be exactly one of the above, verbatim)
-2. l2: A short subcategory name (2–4 words). Use the same language as the document filename.
+2. l2: A short subcategory name (2–5 words). Documents are primarily in Japanese — write l2 in Japanese unless the filename is clearly in another language.
 
 Respond ONLY with a valid JSON array, no extra text:
 [
@@ -219,14 +219,51 @@ _STOPWORDS = {
     "de", "la", "le", "les", "des", "du", "en", "et",
 }
 
+# Unicode ranges covering CJK Unified Ideographs, Hiragana, Katakana,
+# Katakana Phonetic Extensions, and common CJK Extension blocks.
+_CJK_RANGES = (
+    (0x3040, 0x30FF),   # Hiragana + Katakana
+    (0x3400, 0x4DBF),   # CJK Unified Ideographs Extension A
+    (0x4E00, 0x9FFF),   # CJK Unified Ideographs
+    (0xF900, 0xFAFF),   # CJK Compatibility Ideographs
+    (0x20000, 0x2A6DF), # CJK Unified Ideographs Extension B
+)
+
+
+def _is_cjk(char: str) -> bool:
+    cp = ord(char)
+    return any(lo <= cp <= hi for lo, hi in _CJK_RANGES)
+
 
 def _keywords(text: str) -> set[str]:
-    """Return a set of lowercased non-stopword tokens from text."""
-    tokens = set()
+    """Return keyword tokens from text.
+
+    For CJK (Japanese) runs: character bigrams (standard IR technique,
+    no tokenizer required).
+    For ASCII/Latin runs: lowercased word tokens, stopwords removed.
+    """
+    tokens: set[str] = set()
+    cjk_run: list[str] = []
+
+    def _flush_cjk() -> None:
+        if len(cjk_run) >= 2:
+            for i in range(len(cjk_run) - 1):
+                tokens.add(cjk_run[i] + cjk_run[i + 1])
+        cjk_run.clear()
+
+    for char in text:
+        if _is_cjk(char):
+            cjk_run.append(char)
+        else:
+            _flush_cjk()
+    _flush_cjk()
+
+    # ASCII/Latin word tokens
     for word in text.lower().split():
         word = word.strip(".,;:!?\"'()[]{}/-")
-        if len(word) >= 3 and word not in _STOPWORDS:
+        if len(word) >= 3 and word not in _STOPWORDS and not any(_is_cjk(c) for c in word):
             tokens.add(word)
+
     return tokens
 
 
