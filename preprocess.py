@@ -283,6 +283,8 @@ def build_index(categorized: list[dict]) -> dict:
     l2_keywords: dict[tuple, set] = {}   # (l1, l2) -> keyword set from doc contents
     l1_l2_names: dict[str, list[str]] = {}  # l1 -> list of l2 labels
     l1_doc_count: dict[str, int] = {}
+    doc_keywords: dict[str, set] = {}    # doc_id -> keyword set
+    docs_by_l2: dict[tuple, list[str]] = {}  # (l1, l2) -> [doc_id, ...]
 
     for doc in categorized:
         l1 = doc["l1"]
@@ -317,7 +319,24 @@ def build_index(categorized: list[dict]) -> dict:
             "l2": l2,
             "file": doc["filename"],
         })
-        edges.append({"from": l2_seen[l2_key], "to": doc_id})
+        doc_kw = _keywords(content)
+        doc_keywords[doc_id] = doc_kw
+        docs_by_l2.setdefault(l2_key, []).append(doc_id)
+
+    # ── Doc↔Doc semantic edges (within same L2, keyword Jaccard similarity) ──
+    for doc_ids_in_l2 in docs_by_l2.values():
+        for i in range(len(doc_ids_in_l2)):
+            for j in range(i + 1, len(doc_ids_in_l2)):
+                da, db = doc_ids_in_l2[i], doc_ids_in_l2[j]
+                sim = _jaccard(doc_keywords[da], doc_keywords[db])
+                if sim >= 0.05:
+                    width = max(1, min(8, round(sim * 20)))
+                    edges.append({
+                        "from": da,
+                        "to": db,
+                        "weight": round(sim, 3),
+                        "width": width,
+                    })
 
     # ── L2↔L2 semantic edges (within same L1, keyword Jaccard similarity) ───
     l2_keys = list(l2_seen.keys())

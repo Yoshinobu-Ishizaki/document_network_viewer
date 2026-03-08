@@ -77,43 +77,41 @@ function applyDocCounts(data) {
 
 // ── Render helpers ─────────────────────────────────────────────────────────
 
-// Style for the anchor (parent) node shown in drill-down views — dimmed, fixed
-const ANCHOR_STYLE = {
-  color: { background: "#e2e8f0", border: "#94a3b8", highlight: { background: "#e2e8f0", border: "#94a3b8" } },
-  font: { color: "#94a3b8", size: 13, face: "sans-serif" },
-  fixed: true,
-  physics: false,
-};
-
 function nodesForLevel(level, l1, l2) {
   if (level === "root") {
-    return { children: graphData.nodes.filter(n => n.level === 1), anchor: null };
+    return graphData.nodes.filter(n => n.level === 1);
   }
   if (level === "l1") {
-    // No anchor: L2 nodes connect to each other via semantic edges
-    const children = graphData.nodes.filter(n => n.level === 2 && n.l1 === l1);
-    return { children, anchor: null };
+    // All L1 nodes stay visible; expand selected L1's L2 nodes alongside them
+    return [
+      ...graphData.nodes.filter(n => n.level === 1),
+      ...graphData.nodes.filter(n => n.level === 2 && n.l1 === l1),
+    ];
   }
   if (level === "l2") {
-    const anchor = graphData.nodes.find(n => n.level === 2 && n.l1 === l1 && (n._baseLabel || n.label) === l2);
-    const children = graphData.nodes.filter(n => n.level === 3 && n.l1 === l1 && n.l2 === l2);
-    return { children, anchor };
+    // All L1 nodes + all L2s of parent L1 + docs of selected L2
+    return [
+      ...graphData.nodes.filter(n => n.level === 1),
+      ...graphData.nodes.filter(n => n.level === 2 && n.l1 === l1),
+      ...graphData.nodes.filter(n => n.level === 3 && n.l1 === l1 && n.l2 === l2),
+    ];
   }
-  return { children: [], anchor: null };
+  return [];
 }
 
 function edgesForNodes(nodeIds) {
   const idSet = new Set(nodeIds);
+  const levelOf = {};
+  for (const n of graphData.nodes) {
+    if (idSet.has(n.id)) levelOf[n.id] = n.level;
+  }
   return graphData.edges
-    .filter(e => idSet.has(e.from) && idSet.has(e.to))
+    .filter(e => idSet.has(e.from) && idSet.has(e.to) && levelOf[e.from] === levelOf[e.to])
     .map(e => e.width != null ? { ...e, width: e.width } : e);
 }
 
-function styledNodes(nodes, anchorId) {
+function styledNodes(nodes) {
   return nodes.map(n => {
-    if (n.id === anchorId) {
-      return { ...n, ...ANCHOR_STYLE, shape: "ellipse" };
-    }
     const style = LEVEL_STYLES[n.level] || {};
     return { ...n, ...style };
   });
@@ -124,13 +122,12 @@ function renderLevel(level, l1, l2) {
   currentL1 = l1;
   currentL2 = l2;
 
-  const { children, anchor } = nodesForLevel(level, l1, l2);
-  const allNodes = anchor ? [anchor, ...children] : children;
+  const allNodes = nodesForLevel(level, l1, l2);
   const nodeIds = allNodes.map(n => n.id);
   const edges = edgesForNodes(nodeIds);
 
   const dataset = {
-    nodes: new vis.DataSet(styledNodes(allNodes, anchor?.id)),
+    nodes: new vis.DataSet(styledNodes(allNodes)),
     edges: new vis.DataSet(edges),
   };
 
@@ -155,11 +152,11 @@ function onNodeDoubleClick(params) {
   const node = graphData.nodes.find(n => n.id === nodeId);
   if (!node) return;
 
-  // Don't drill into the anchor (parent) node shown in the current view
-  // Use _baseLabel (without count) as the routing key
-  if (node.level === 1 && currentLevel === "root") {
+  // Double-click L1 from any level → expand that L1's subcategories
+  // Double-click L2 from any level → expand that L2's documents
+  if (node.level === 1) {
     renderLevel("l1", node._baseLabel || node.label, null);
-  } else if (node.level === 2 && currentLevel === "l1") {
+  } else if (node.level === 2) {
     renderLevel("l2", node.l1, node._baseLabel || node.label);
   }
   // level 3 (doc) is handled by single-click

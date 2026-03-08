@@ -34,20 +34,6 @@ STATIC_DIR = Path("static")
 app = FastAPI(title="Document Network Viewer")
 
 
-@app.on_event("startup")
-async def open_browser() -> None:
-    """Open the browser once when the server first starts (not on every hot reload)."""
-    if os.environ.get("_APP_BROWSER_OPENED"):
-        return
-    os.environ["_APP_BROWSER_OPENED"] = "1"
-
-    def _open() -> None:
-        import time
-        time.sleep(0.5)
-        webbrowser.open("http://localhost:8000")
-
-    threading.Thread(target=_open, daemon=True).start()
-
 
 @app.get("/api/graph")
 def get_graph() -> JSONResponse:
@@ -257,4 +243,11 @@ app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn
+
+    def _open_browser() -> None:
+        import time
+        time.sleep(1.0)  # wait for server to bind
+        webbrowser.open("http://localhost:8000")
+
+    threading.Thread(target=_open_browser, daemon=True).start()
     uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)
