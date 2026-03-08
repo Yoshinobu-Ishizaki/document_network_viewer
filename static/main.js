@@ -258,8 +258,24 @@ function edgesForNodes(nodeIds) {
 }
 
 function styledNodes(nodes) {
+  // Compute max ndocs per level for proportional size scaling
+  const maxNdocs = { 1: 1, 2: 1 };
+  for (const n of nodes) {
+    if ((n.level === 1 || n.level === 2) && n.ndocs > maxNdocs[n.level]) {
+      maxNdocs[n.level] = n.ndocs;
+    }
+  }
+
   return nodes.map(n => {
     const style = LEVEL_STYLES[n.level] || {};
+    let sizeOverride = {};
+    if (n.level === 1 && n.ndocs) {
+      const ratio = n.ndocs / maxNdocs[1];
+      sizeOverride = { size: Math.round(20 + ratio * 20) };  // 20–40
+    } else if (n.level === 2 && n.ndocs) {
+      const ratio = n.ndocs / maxNdocs[2];
+      sizeOverride = { size: Math.round(14 + ratio * 16) };  // 14–30
+    }
     let extra = {};
     if (searchHighlight) {
       if (n.id === searchHighlight.l2Id)
@@ -273,7 +289,7 @@ function styledNodes(nodes) {
           font: { color: "#ffffff" },
         };
     }
-    return { ...n, ...style, ...extra };
+    return { ...n, ...style, ...sizeOverride, ...extra };
   });
 }
 

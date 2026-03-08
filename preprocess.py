@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -71,8 +72,13 @@ class LLMClient:
             self._genai = genai
             self._client = None  # Gemini uses module-level calls
 
+        elif self.provider == "claude-code":
+            # Uses the `claude` CLI with your existing login — no API key required.
+            self.model = os.environ.get("CLAUDE_CODE_MODEL", "claude-haiku-4-5-20251001")
+            self._client = None
+
         else:
-            sys.exit(f"Unknown LLM_PROVIDER '{self.provider}'. Use: anthropic | openai | gemini")
+            sys.exit(f"Unknown LLM_PROVIDER '{self.provider}'. Use: anthropic | openai | gemini | claude-code")
 
         print(f"Using LLM provider: {self.provider} / {self.model}")
 
@@ -98,6 +104,18 @@ class LLMClient:
             resp = model.generate_content(prompt)
             return resp.text.strip()
 
+        elif self.provider == "claude-code":
+            result = subprocess.run(
+                ["claude", "--model", self.model, "-p", prompt],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=120,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"claude CLI failed: {result.stderr.strip()}")
+            return result.stdout.strip()
+
         raise RuntimeError(f"Unsupported provider: {self.provider}")
 
 
@@ -120,10 +138,12 @@ def write_text_cache(all_docs: list[Path], cache: dict) -> None:
     """Write extracted text for each doc to .text_cache/ for keyword search."""
     TEXT_CACHE_DIR.mkdir(exist_ok=True)
     for path in all_docs:
-        entry = cache.get(path.name, {})
+        rel = str(path.relative_to(DATA_DIR))
+        entry = cache.get(rel, {})
         text = entry.get("content", "")
         if text:
-            (TEXT_CACHE_DIR / (path.name + ".txt")).write_text(text, encoding="utf-8")
+            safe_name = rel.replace("/", "__").replace("\\", "__")
+            (TEXT_CACHE_DIR / (safe_name + ".txt")).write_text(text, encoding="utf-8")
 
 
 def index_doc_assignments(index: dict) -> dict[str, dict]:
@@ -207,7 +227,10 @@ Documents:
 def scan_documents() -> list[Path]:
     docs = []
     for suffix in ("*.md", "*.pdf"):
-        docs.extend(DATA_DIR.glob(suffix))
+        docs.extend(
+            p for p in DATA_DIR.rglob(suffix)
+            if ".text_cache" not in p.parts
+        )
     return sorted(docs)
 
 
@@ -283,6 +306,7 @@ def build_index(categorized: list[dict]) -> dict:
     l2_keywords: dict[tuple, set] = {}   # (l1, l2) -> keyword set from doc contents
     l1_l2_names: dict[str, list[str]] = {}  # l1 -> list of l2 labels
     l1_doc_count: dict[str, int] = {}
+    l2_doc_count: dict[tuple, int] = {}  # (l1, l2) -> doc count
     doc_keywords: dict[str, set] = {}    # doc_id -> keyword set
     docs_by_l2: dict[tuple, list[str]] = {}  # (l1, l2) -> [doc_id, ...]
 
@@ -301,6 +325,7 @@ def build_index(categorized: list[dict]) -> dict:
         l1_doc_count[l1] += 1
 
         l2_key = (l1, l2)
+        l2_doc_count[l2_key] = l2_doc_count.get(l2_key, 0) + 1
         if l2_key not in l2_seen:
             l2_id = f"l2:{l1}:{l2}"
             l2_seen[l2_key] = l2_id
@@ -322,6 +347,13 @@ def build_index(categorized: list[dict]) -> dict:
         doc_kw = _keywords(content)
         doc_keywords[doc_id] = doc_kw
         docs_by_l2.setdefault(l2_key, []).append(doc_id)
+
+    # Set ndocs on L1 and L2 nodes now that counts are final
+    for node in nodes:
+        if node["level"] == 1:
+            node["ndocs"] = l1_doc_count.get(node["label"], 0)
+        elif node["level"] == 2:
+            node["ndocs"] = l2_doc_count.get((node["l1"], node["label"]), 0)
 
     # ── Doc↔Doc semantic edges (within same L2, keyword Jaccard similarity) ──
     for doc_ids_in_l2 in docs_by_l2.values():
@@ -459,7 +491,7 @@ def apply_constraints(
         changed = True
         while changed:
             changed = False
-            groups = get_groups(sum(groups.values(), []))
+            groups = get_groups(docs)  # recompute from full list so in-place l2 updates are visible
             small = [l2 for l2, ds in groups.items() if len(ds) < min_docs]
             if not small or len(groups) <= 1:
                 break
@@ -488,7 +520,34 @@ def apply_constraints(
                 del groups[l2_small]
                 changed = True
 
+        # ── Merge excess subcategories to enforce max_subcategories ──────────
+        groups = get_groups(docs)
+        while len(groups) > max_subcats:
+            # Merge the smallest subcategory into its most similar neighbor
+            l2_small = min(groups, key=lambda l2: len(groups[l2]))
+            kw_small = set()
+            for d in groups[l2_small]:
+                kw_small |= _keywords(d.get("content", "") + " " + l2_small)
+            best_l2, best_sim = None, -1.0
+            for l2_other, ds_other in groups.items():
+                if l2_other == l2_small:
+                    continue
+                kw_other = set()
+                for d in ds_other:
+                    kw_other |= _keywords(d.get("content", "") + " " + l2_other)
+                sim = _jaccard(kw_small, kw_other)
+                if sim > best_sim:
+                    best_sim, best_l2 = sim, l2_other
+            if best_l2 is None:
+                best_l2 = next(l2 for l2 in groups if l2 != l2_small)
+            print(f"  Merging excess subcat '{l2_small}' ({len(groups[l2_small])} docs) → '{best_l2}' in {l1}")
+            for d in groups[l2_small]:
+                d["l2"] = best_l2
+            del groups[l2_small]
+            groups = get_groups(docs)
+
         # ── Split large subcategories ─────────────────────────────────────────
+        groups = get_groups(docs)
         for l2, ds in list(groups.items()):
             if len(ds) > max_docs and len(groups) < max_subcats:
                 print(f"  Splitting large subcat '{l2}' ({len(ds)} docs) in {l1}")
@@ -514,6 +573,7 @@ def categorize_new_docs(
         batch = to_process[i : i + BATCH_SIZE]
         print(f"  Batch {i // BATCH_SIZE + 1} ({len(batch)} docs)...")
         results = categorize_batch(client, batch, categories)
+        covered_indices: set[int] = set()
         for r in results:
             doc = batch[r["index"] - 1]
             cache[doc["filename"]] = {
@@ -522,6 +582,17 @@ def categorize_new_docs(
                 "l2": r["l2"],
                 "content": doc["content"],
             }
+            covered_indices.add(r["index"] - 1)
+        # Fallback for docs the LLM omitted from its response
+        for idx, doc in enumerate(batch):
+            if idx not in covered_indices:
+                print(f"  WARNING: LLM did not categorize '{doc['filename']}' — assigning to fallback category.")
+                cache[doc["filename"]] = {
+                    "hash": doc["hash"],
+                    "l1": categories[0],
+                    "l2": "未分類",
+                    "content": doc["content"],
+                }
     save_cache(cache)
     print("Cache saved.")
 
@@ -530,10 +601,11 @@ def backfill_content(cache: dict, all_docs: list[Path]) -> None:
     """Ensure every cache entry has a content field (back-compat)."""
     updated = False
     for path in all_docs:
-        entry = cache.get(path.name, {})
+        rel = str(path.relative_to(DATA_DIR))
+        entry = cache.get(rel, {})
         if entry and "content" not in entry:
             entry["content"] = read_document(path)
-            cache[path.name] = entry
+            cache[rel] = entry
             updated = True
     if updated:
         save_cache(cache)
@@ -563,9 +635,10 @@ def main() -> None:
     to_process = []
     for path in all_docs:
         h = file_hash(path)
-        if path.name not in cache or cache[path.name]["hash"] != h:
+        rel = str(path.relative_to(DATA_DIR))
+        if rel not in cache or cache[rel]["hash"] != h:
             content = read_document(path)
-            to_process.append({"filename": path.name, "content": content, "hash": h})
+            to_process.append({"filename": rel, "content": content, "hash": h})
 
     if to_process:
         categorize_new_docs(client, to_process, categories, cache)
@@ -585,37 +658,38 @@ def main() -> None:
 
         categorized = []
         for path in all_docs:
-            if path.name not in cache:
+            rel = str(path.relative_to(DATA_DIR))
+            if rel not in cache:
                 continue
-            if path.name in new_filenames:
+            if rel in new_filenames:
                 # New file — use fresh LLM assignment from cache
-                entry = cache[path.name]
+                entry = cache[rel]
                 categorized.append({
-                    "filename": path.name,
+                    "filename": rel,
                     "l1": entry["l1"],
                     "l2": entry["l2"],
                     "content": entry.get("content", ""),
                 })
-            elif path.name in ui_assignments:
+            elif rel in ui_assignments:
                 # Existing file — use UI assignment to preserve renames/merges
-                ui = ui_assignments[path.name]
+                ui = ui_assignments[rel]
                 categorized.append({
-                    "filename": path.name,
+                    "filename": rel,
                     "l1": ui["l1"],
                     "l2": ui["l2"],
-                    "content": cache[path.name].get("content", ""),
+                    "content": cache[rel].get("content", ""),
                 })
             else:
                 # In cache but not in index (e.g. index was manually edited) — use cache
-                entry = cache[path.name]
+                entry = cache[rel]
                 categorized.append({
-                    "filename": path.name,
+                    "filename": rel,
                     "l1": entry["l1"],
                     "l2": entry["l2"],
                     "content": entry.get("content", ""),
                 })
 
-        new_count = len(new_filenames & {p.name for p in all_docs})
+        new_count = len(new_filenames & {str(p.relative_to(DATA_DIR)) for p in all_docs})
         if new_count:
             print(f"Incremental mode: added {new_count} new document(s), preserving existing categorization.")
         else:
@@ -625,13 +699,13 @@ def main() -> None:
             print("Rebuild mode: regenerating index from cache (UI renames/merges will be reset).")
         categorized = [
             {
-                "filename": path.name,
-                "l1": cache[path.name]["l1"],
-                "l2": cache[path.name]["l2"],
-                "content": cache[path.name].get("content", ""),
+                "filename": str(path.relative_to(DATA_DIR)),
+                "l1": cache[str(path.relative_to(DATA_DIR))]["l1"],
+                "l2": cache[str(path.relative_to(DATA_DIR))]["l2"],
+                "content": cache[str(path.relative_to(DATA_DIR))].get("content", ""),
             }
             for path in all_docs
-            if path.name in cache
+            if str(path.relative_to(DATA_DIR)) in cache
         ]
 
     if constraints:
