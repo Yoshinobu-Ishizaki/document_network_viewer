@@ -72,7 +72,6 @@ categories:
 subcategory_constraints:
   max_subcategories: 8         # hard upper limit per L1
   min_docs_per_subcategory: 2  # merge smaller L2s into nearest neighbor
-  max_docs_per_subcategory: 20 # split larger L2s (if max_subcategories not reached)
 ```
 
 Remove the `subcategory_constraints` block to disable constraint enforcement.
@@ -123,3 +122,18 @@ uv run preprocess.py --rebuild # full rebuild from cache
 uv run app.py
 # App available at http://localhost:8000
 ```
+## Development cycle
+
+When use asks to "tackle todo", "handle todo", or similar meaning, 
+
+- Read @TODO.md and do for each entry written in that one by one. 
+- Todo entry is listed by "- [ ]" 
+- Ignore entry by "- [x]" because it have been done.
+- Handle entry sequentially. The entry nearest to top of the file should be handled first.
+- For each entry, always make plan with plan mode.
+- When all implementation is done, ask user to approve its result and ask to mark the entry done.
+- If user approve, check entry done which means change "- [ ]" to "- [x]".
+- Finally ask user to commit changes.
+- Then, ask user to move to next entry if there is such one left.
+
+ 
