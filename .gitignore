@@ -209,3 +209,4 @@ __marimo__/
 data/
 .env
 data/.text_cache/
+settings.json

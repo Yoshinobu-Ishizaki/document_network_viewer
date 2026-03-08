@@ -1,18 +1,16 @@
 /**
  * Document Network Viewer — main.js
- *
- * Drill-down graph: All L1 → click L1 → its L2s → click L2 → its docs → click doc → side panel
- * Breadcrumb lets you navigate back up at any level.
  */
 
 // ── State ──────────────────────────────────────────────────────────────────
-let graphData = null;          // full data/index.json
-let network = null;            // vis.js Network instance
-let currentLevel = "root";     // "root" | "l1" | "l2"
+let graphData = null;
+let network = null;
+let currentLevel = "root";
 let currentL1 = null;
 let currentL2 = null;
-let searchHighlight = null;    // { l1Id, l2Id } | null — baked into styledNodes
-let nodesDataRef = null;       // reference to the active vis.js nodes DataSet
+let searchHighlight = null;    // { l1Id, l2Id } | null
+let nodesDataRef = null;
+let edgesDataRef = null;
 
 // ── Color presets ──────────────────────────────────────────────────────────
 const PRESET_LIGHT = {
@@ -21,6 +19,9 @@ const PRESET_LIGHT = {
   docBg: "#ffffff", docBorder: "#475569",
   semanticEdge: "#64748b",
   containEdge: "#a78bfa",
+  selectionColor: "#f59e0b",
+  searchL1Color: "#fb923c",
+  searchL2Color: "#fbbf24",
 };
 const PRESET_DARK = {
   l1Bg: "#3b82f6", l1Border: "#60a5fa",
@@ -28,11 +29,14 @@ const PRESET_DARK = {
   docBg: "#1e293b", docBorder: "#64748b",
   semanticEdge: "#94a3b8",
   containEdge: "#7c3aed",
+  selectionColor: "#fbbf24",
+  searchL1Color: "#f97316",
+  searchL2Color: "#f59e0b",
 };
 
-let colorMode = "auto";          // "light" | "dark" | "auto"
+let colorMode = "auto";
 let appColors = { ...PRESET_LIGHT };
-let currentSavedSettings = {};   // last response from /api/settings
+let currentSavedSettings = {};
 
 const THEME_LABELS = { light: "☀ Light", dark: "🌙 Dark", auto: "⚙ Auto" };
 const THEME_ORDER = ["light", "dark", "auto"];
@@ -46,25 +50,58 @@ function resolveEffectiveTheme() {
 function buildLevelStyles() {
   const docFont = resolveEffectiveTheme() === "dark" ? "#f1f5f9" : "#1e2229";
   return {
-    1: { color: { background: appColors.l1Bg, border: appColors.l1Border, highlight: { background: appColors.l1Bg, border: appColors.l1Border } }, font: { color: "#ffffff", size: 15, face: "sans-serif" }, shape: "ellipse", size: 28 },
-    2: { color: { background: appColors.l2Bg, border: appColors.l2Border, highlight: { background: appColors.l2Bg, border: appColors.l2Border } }, font: { color: "#ffffff", size: 13, face: "sans-serif" }, shape: "ellipse", size: 22 },
-    3: { color: { background: appColors.docBg, border: appColors.docBorder, highlight: { background: appColors.docBg, border: "#3b82f6" } }, font: { color: docFont, size: 12, face: "sans-serif" }, shape: "box", size: 16 },
+    1: {
+      color: {
+        background: appColors.l1Bg, border: appColors.l1Border,
+        highlight: { background: appColors.selectionColor, border: appColors.selectionColor },
+      },
+      font: { color: "#ffffff", size: 15, face: "sans-serif" }, shape: "ellipse", size: 28,
+    },
+    2: {
+      color: {
+        background: appColors.l2Bg, border: appColors.l2Border,
+        highlight: { background: appColors.selectionColor, border: appColors.selectionColor },
+      },
+      font: { color: "#ffffff", size: 13, face: "sans-serif" }, shape: "ellipse", size: 22,
+    },
+    3: {
+      color: {
+        background: appColors.docBg, border: appColors.docBorder,
+        highlight: { background: appColors.selectionColor, border: appColors.selectionColor },
+      },
+      font: { color: docFont, size: 12, face: "sans-serif" }, shape: "box", size: 16,
+    },
   };
 }
 
 let LEVEL_STYLES = buildLevelStyles();
 
-function applyColorOptions() {
-  if (network) network.setOptions({ edges: { color: { color: appColors.semanticEdge, highlight: appColors.semanticEdge } } });
+// Update colors in-place without resetting node positions or physics
+function refreshDisplayedColors() {
+  if (!nodesDataRef || !edgesDataRef) return;
+  LEVEL_STYLES = buildLevelStyles();
+
+  const allNodes = nodesForLevel(currentLevel, currentL1, currentL2);
+  const nodeUpdates = styledNodes(allNodes).map(n => ({ id: n.id, color: n.color, font: n.font }));
+  nodesDataRef.update(nodeUpdates);
+
+  const edgeUpdates = edgesDataRef.getIds().map(id => {
+    const e = edgesDataRef.get(id);
+    if (e.dashes) {
+      return { id, color: { color: appColors.containEdge, highlight: appColors.containEdge, inherit: false } };
+    } else {
+      return { id, color: { color: appColors.semanticEdge, highlight: appColors.semanticEdge, inherit: false } };
+    }
+  });
+  edgesDataRef.update(edgeUpdates);
 }
 
 function applyTheme(colors) {
   Object.assign(appColors, colors);
   LEVEL_STYLES = buildLevelStyles();
   document.documentElement.setAttribute("data-theme", resolveEffectiveTheme());
-  if (network) {
-    renderLevel(currentLevel, currentL1, currentL2);
-    applyColorOptions();
+  if (network && nodesDataRef && edgesDataRef) {
+    refreshDisplayedColors();
   }
 }
 
@@ -76,7 +113,6 @@ function loadThemeColors(savedSettings) {
   applyTheme({ ...preset, ...saved });
 }
 
-// React to OS dark/light preference changes when in "auto" mode
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
   if (colorMode !== "auto") return;
   const theme = resolveEffectiveTheme();
@@ -95,7 +131,7 @@ const NETWORK_OPTIONS = {
   },
   interaction: { hover: true, tooltipDelay: 200 },
   edges: {
-    color: { color: "#64748b", highlight: "#64748b" },
+    color: { color: "#64748b", highlight: "#64748b", inherit: false },
     width: 1.5,
     smooth: { type: "continuous" },
     arrows: { to: { enabled: false } },
@@ -123,7 +159,6 @@ async function init() {
   graphData = await graphRes.json();
   applyDocCounts(graphData);
   renderLevel("root", null, null);
-  applyColorOptions();
 }
 
 // ── Document counts ────────────────────────────────────────────────────────
@@ -187,10 +222,13 @@ function edgesForNodes(nodeIds) {
     if (idSet.has(n.id)) levelOf[n.id] = n.level;
   }
 
-  // Same-level semantic edges
+  // Semantic edges — explicit color, no inheritance
   const semanticEdges = graphData.edges
     .filter(e => idSet.has(e.from) && idSet.has(e.to) && levelOf[e.from] === levelOf[e.to])
-    .map(e => e.width != null ? { ...e, width: e.width } : e);
+    .map(e => ({
+      ...e,
+      color: { color: appColors.semanticEdge, highlight: appColors.semanticEdge, inherit: false },
+    }));
 
   // Containment edges (parent → child, dashed)
   const containmentEdges = [];
@@ -199,12 +237,18 @@ function edgesForNodes(nodeIds) {
     if (n.level === 2) {
       const l1Id = `l1:${n.l1}`;
       if (idSet.has(l1Id)) {
-        containmentEdges.push({ from: l1Id, to: n.id, dashes: true, width: 1, color: { color: appColors.containEdge } });
+        containmentEdges.push({
+          from: l1Id, to: n.id, dashes: true, width: 1,
+          color: { color: appColors.containEdge, highlight: appColors.containEdge, inherit: false },
+        });
       }
     } else if (n.level === 3) {
       const l2Id = `l2:${n.l1}:${n.l2}`;
       if (idSet.has(l2Id)) {
-        containmentEdges.push({ from: l2Id, to: n.id, dashes: true, width: 1, color: { color: appColors.containEdge } });
+        containmentEdges.push({
+          from: l2Id, to: n.id, dashes: true, width: 1,
+          color: { color: appColors.containEdge, highlight: appColors.containEdge, inherit: false },
+        });
       }
     }
   }
@@ -218,9 +262,15 @@ function styledNodes(nodes) {
     let extra = {};
     if (searchHighlight) {
       if (n.id === searchHighlight.l2Id)
-        extra = { color: { background: "#fbbf24", border: "#d97706" }, font: { color: "#1e2229" } };
+        extra = {
+          color: { background: appColors.searchL2Color, border: "#d97706", highlight: { background: appColors.searchL2Color, border: "#d97706" } },
+          font: { color: "#1e2229" },
+        };
       else if (n.id === searchHighlight.l1Id)
-        extra = { color: { background: "#fb923c", border: "#ea580c" }, font: { color: "#ffffff" } };
+        extra = {
+          color: { background: appColors.searchL1Color, border: "#ea580c", highlight: { background: appColors.searchL1Color, border: "#ea580c" } },
+          font: { color: "#ffffff" },
+        };
     }
     return { ...n, ...style, ...extra };
   });
@@ -235,21 +285,17 @@ function renderLevel(level, l1, l2) {
   const nodeIds = allNodes.map(n => n.id);
   const edges = edgesForNodes(nodeIds);
 
+  // Bake current searchHighlight into node styles
   const nodesDataset = new vis.DataSet(styledNodes(allNodes));
+  const edgesDataset = new vis.DataSet(edges);
   nodesDataRef = nodesDataset;
-  const dataset = {
-    nodes: nodesDataset,
-    edges: new vis.DataSet(edges),
-  };
+  edgesDataRef = edgesDataset;
 
-  // Capture and clear highlight before setData; re-apply via RAF to guard
-  // against vis.js's async resize re-draw overriding the baked-in colors.
-  const hl = searchHighlight;
-  searchHighlight = null;
-
+  const dataset = { nodes: nodesDataset, edges: edgesDataset };
   const container = document.getElementById("graph");
 
   if (network) {
+    network.setOptions({ physics: { enabled: true } });
     network.setData(dataset);
   } else {
     network = new vis.Network(container, dataset, NETWORK_OPTIONS);
@@ -258,19 +304,30 @@ function renderLevel(level, l1, l2) {
     network.on("oncontext", onNodeRightClick);
   }
 
-  if (hl) {
-    requestAnimationFrame(() => {
-      if (nodesDataRef !== nodesDataset) return; // a newer renderLevel replaced the dataset
-      const updates = [];
-      if (nodesDataset.get(hl.l2Id))
-        updates.push({ id: hl.l2Id, color: { background: "#fbbf24", border: "#d97706" }, font: { color: "#1e2229" } });
-      if (nodesDataset.get(hl.l1Id))
-        updates.push({ id: hl.l1Id, color: { background: "#fb923c", border: "#ea580c" }, font: { color: "#ffffff" } });
-      if (updates.length) nodesDataset.update(updates);
-    });
-  }
+  // Disable physics after layout so nodes stay put.
+  // Uses network.on + manual removal (network.once is not in vis-network 9.1.9's public API).
+  // Fallback timer ensures the graph appears even if the event never fires.
+  let physicsOffTimer;
+  const onStabilized = () => {
+    network.off("stabilizationIterationsDone", onStabilized);
+    clearTimeout(physicsOffTimer);
+    network.setOptions({ physics: { enabled: false } });
+    network.fit();
+  };
+  network.on("stabilizationIterationsDone", onStabilized);
+  physicsOffTimer = setTimeout(() => {
+    network.off("stabilizationIterationsDone", onStabilized);
+    network.setOptions({ physics: { enabled: false } });
+    network.fit();
+  }, 5000);
 
   updateBreadcrumb(level, l1, l2);
+}
+
+// Navigate: clears search highlight before rendering
+function navigateTo(level, l1, l2) {
+  searchHighlight = null;
+  renderLevel(level, l1, l2);
 }
 
 // ── Interaction ─────────────────────────────────────────────────────────────
@@ -281,18 +338,17 @@ function onNodeDoubleClick(params) {
   if (!node) return;
 
   if (node.level === 1) {
-    renderLevel("l1", node._baseLabel || node.label, null);
+    navigateTo("l1", node._baseLabel || node.label, null);
   } else if (node.level === 2) {
-    renderLevel("l2", node.l1, node._baseLabel || node.label);
+    navigateTo("l2", node.l1, node._baseLabel || node.label);
   }
-  // level 3 (doc) is handled by single-click
 }
 
 document.getElementById("expand-all-btn").addEventListener("click", () => {
-  renderLevel("all-l2", null, null);
+  navigateTo("all-l2", null, null);
 });
 document.getElementById("collapse-all-btn").addEventListener("click", () => {
-  renderLevel("root", null, null);
+  navigateTo("root", null, null);
 });
 
 function onNodeClick(params) {
@@ -393,17 +449,17 @@ function updateBreadcrumb(level, l1, l2) {
   if (level === "root") {
     bc.appendChild(crumb("All", null, true));
   } else if (level === "all-l2") {
-    bc.appendChild(crumb("All", () => renderLevel("root", null, null), false));
+    bc.appendChild(crumb("All", () => navigateTo("root", null, null), false));
     bc.appendChild(sep());
     bc.appendChild(crumb("Expanded", null, true));
   } else if (level === "l1") {
-    bc.appendChild(crumb("All", () => renderLevel("root", null, null), false));
+    bc.appendChild(crumb("All", () => navigateTo("root", null, null), false));
     bc.appendChild(sep());
     bc.appendChild(crumb(l1, null, true));
   } else if (level === "l2") {
-    bc.appendChild(crumb("All", () => renderLevel("root", null, null), false));
+    bc.appendChild(crumb("All", () => navigateTo("root", null, null), false));
     bc.appendChild(sep());
-    bc.appendChild(crumb(l1, () => renderLevel("l1", l1, null), false));
+    bc.appendChild(crumb(l1, () => navigateTo("l1", l1, null), false));
     bc.appendChild(sep());
     bc.appendChild(crumb(l2, null, true));
   }
@@ -441,7 +497,7 @@ document.addEventListener("click", (e) => {
 document.getElementById("ctx-rename").addEventListener("click", async () => {
   if (!contextNode) return;
   const oldName = contextNode._baseLabel || contextNode.label;
-  const nodeL1 = contextNode.l1;  // capture before hideContextMenu sets contextNode = null
+  const nodeL1 = contextNode.l1;
   hideContextMenu();
 
   const newName = prompt(`Rename "${oldName}" to:`, oldName);
@@ -501,6 +557,7 @@ async function reloadGraph() {
   if (!res.ok) return;
   graphData = await res.json();
   applyDocCounts(graphData);
+  searchHighlight = null;
   renderLevel(currentLevel, currentL1, currentL2);
 }
 
@@ -511,12 +568,14 @@ const searchResults = document.getElementById("search-results");
 const searchResultsList = document.getElementById("search-results-list");
 const searchResultsLabel = document.getElementById("search-results-label");
 
-let activeResultLi = null;  // currently highlighted search result item
+let activeResultLi = null;
 
 function closeSearchResults() {
   searchResults.classList.add("hidden");
   searchInput.value = "";
   activeResultLi = null;
+  searchHighlight = null;
+  if (nodesDataRef) refreshDisplayedColors();
 }
 
 document.getElementById("search-results-close").addEventListener("click", closeSearchResults);
@@ -560,21 +619,24 @@ async function runSearch() {
     `;
 
     li.addEventListener("click", () => {
-      // Move selection highlight to this item
       if (activeResultLi) activeResultLi.classList.remove("result-selected");
       li.classList.add("result-selected");
       activeResultLi = li;
 
-      // Always open doc panel first (works even if docNode not in graph)
       const label = docNode ? docNode.label : match.filename;
       openDoc(match.filename, label);
+
       if (docNode) {
-        // Set highlight state BEFORE renderLevel so styledNodes bakes it in
         searchHighlight = {
           l1Id: `l1:${docNode.l1}`,
           l2Id: `l2:${docNode.l1}:${docNode.l2}`,
         };
-        renderLevel("l2", docNode.l1, docNode.l2);
+        // If already on the correct l2 view, just refresh colors (preserves positions)
+        if (currentLevel === "l2" && currentL1 === docNode.l1 && currentL2 === docNode.l2) {
+          refreshDisplayedColors();
+        } else {
+          renderLevel("l2", docNode.l1, docNode.l2);
+        }
       }
     });
 
@@ -604,6 +666,14 @@ async function saveSettings() {
   });
 }
 
+function readSettingsInputs() {
+  const updated = {};
+  document.querySelectorAll("#settings-panel input[data-key]").forEach(inp => {
+    updated[inp.dataset.key] = inp.value;
+  });
+  return updated;
+}
+
 document.getElementById("settings-btn").addEventListener("click", () => {
   const panel = document.getElementById("settings-panel");
   panel.classList.toggle("hidden");
@@ -616,11 +686,12 @@ document.getElementById("settings-close").addEventListener("click", () => {
   document.getElementById("settings-panel").classList.add("hidden");
 });
 
+document.getElementById("settings-apply").addEventListener("click", () => {
+  applyTheme(readSettingsInputs());
+});
+
 document.getElementById("settings-save").addEventListener("click", async () => {
-  const updated = {};
-  document.querySelectorAll("#settings-panel input[data-key]").forEach(inp => {
-    updated[inp.dataset.key] = inp.value;
-  });
+  const updated = readSettingsInputs();
   const theme = resolveEffectiveTheme();
   currentSavedSettings[theme + "Colors"] = updated;
   applyTheme(updated);
@@ -633,6 +704,9 @@ document.getElementById("settings-reset").addEventListener("click", async () => 
   delete currentSavedSettings[theme + "Colors"];
   const preset = theme === "dark" ? PRESET_DARK : PRESET_LIGHT;
   applyTheme(preset);
+  document.querySelectorAll("#settings-panel input[data-key]").forEach(inp => {
+    inp.value = preset[inp.dataset.key] || "#000000";
+  });
   await saveSettings();
 });
 

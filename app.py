@@ -273,8 +273,8 @@ if __name__ == "__main__":
         def _open_browser() -> None:
             import time
             time.sleep(1.0)  # wait for server to bind
-            webbrowser.open("http://localhost:8000")
+            webbrowser.open("http://localhost:8001")
 
         threading.Thread(target=_open_browser, daemon=True).start()
 
-    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("app:app", host="127.0.0.1", port=8001, reload=True)
