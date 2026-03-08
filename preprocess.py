@@ -682,6 +682,63 @@ def backfill_content(cache: dict, all_docs: list[Path]) -> None:
         save_cache(cache)
 
 
+def refine_l2_groups(
+    categorized: list[dict],
+    client: LLMClient,
+    categories: list[str],
+) -> list[dict]:
+    """Stage-2 subcategorization: for each L1 group, ask LLM to assign
+    consistent, coherent L2 names by seeing all docs in the group at once."""
+    from collections import defaultdict
+
+    by_l1: dict[str, list] = defaultdict(list)
+    for doc in categorized:
+        by_l1[doc["l1"]].append(doc)
+
+    refined = {doc["filename"]: doc["l2"] for doc in categorized}
+
+    for l1, docs in by_l1.items():
+        if len(docs) < 2:
+            continue  # nothing to group
+        print(f"  Refining L2 subcategories for '{l1}' ({len(docs)} docs)…")
+        docs_str = "\n\n".join(
+            f"[{i + 1}] filename: {d['filename']}\n"
+            f"current draft subcategory: {d['l2']}\n"
+            f"content snippet:\n{d['content'][:600]}"
+            for i, d in enumerate(docs)
+        )
+        prompt = f"""You are organizing {len(docs)} documents that all belong to the top-level category "{l1}".
+
+Your task:
+1. Design a set of 3–8 coherent, descriptive subcategory names that together cover all these documents.
+   - Names should be 2–5 words, in Japanese if the documents are primarily Japanese.
+   - Reuse the same name for documents on the same topic — consistency is critical.
+   - Each name should be meaningfully different from the others.
+2. Assign each document to exactly one of those subcategory names.
+
+Respond ONLY with a valid JSON array, no extra text:
+[
+  {{"index": 1, "l2": "<subcategory name>"}},
+  ...
+]
+
+Documents:
+{docs_str}"""
+
+        try:
+            text = client.chat(prompt)
+            start = text.find("[")
+            end = text.rfind("]") + 1
+            results = json.loads(text[start:end])
+            for r in results:
+                doc = docs[r["index"] - 1]
+                refined[doc["filename"]] = r["l2"]
+        except Exception as e:
+            print(f"  WARNING: L2 refinement failed for '{l1}': {e} — keeping draft names.")
+
+    return [{**doc, "l2": refined[doc["filename"]]} for doc in categorized]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Preprocess documents into data/index.json")
     parser.add_argument(
@@ -778,6 +835,13 @@ def main() -> None:
             for path in all_docs
             if str(path.relative_to(DATA_DIR)) in cache
         ]
+
+    # Stage-2: refine L2 names per L1 group for consistency (skip pure incremental
+    # with no new docs to avoid overwriting UI renames/merges)
+    needs_refinement = args.rebuild or bool(to_process)
+    if needs_refinement:
+        print("Refining L2 subcategories for consistency…")
+        categorized = refine_l2_groups(categorized, client, categories)
 
     if constraints:
         print("Applying subcategory constraints...")

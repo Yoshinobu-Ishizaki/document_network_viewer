@@ -35,11 +35,10 @@
     <div id="search-resize-handle" title="Drag to resize"></div>
   </div>
 
-  <!-- Context menu for L2 nodes and L3 doc nodes -->
+  <!-- Context menu for L2 nodes -->
   <div id="context-menu" class="hidden">
     <button id="ctx-rename" class="ctx-l2-only">Rename subcategory</button>
     <button id="ctx-merge" class="ctx-l2-only">Merge into…</button>
-    <button id="ctx-move-doc" class="ctx-l3-only">Move to…</button>
   </div>
 
   <!-- Merge dialog -->
@@ -50,29 +49,6 @@
       <div id="merge-actions">
         <button id="merge-confirm">Merge</button>
         <button id="merge-cancel">Cancel</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Move-doc dialog -->
-  <div id="move-doc-overlay" class="hidden">
-    <div id="move-doc-dialog">
-      <h3>Move "<span id="move-doc-label"></span>"</h3>
-      <div class="move-doc-row">
-        <label>Category</label>
-        <select id="move-doc-l1-select"></select>
-      </div>
-      <div class="move-doc-row">
-        <label>Subcategory</label>
-        <select id="move-doc-l2-select"></select>
-      </div>
-      <div class="move-doc-new-row">
-        <label>New subcategory</label>
-        <input id="move-doc-new-l2" type="text" placeholder="Type name to create new…" />
-      </div>
-      <div id="move-doc-actions">
-        <button id="move-doc-confirm">Move</button>
-        <button id="move-doc-cancel">Cancel</button>
       </div>
     </div>
   </div>
@@ -91,8 +67,7 @@
       <label>Semantic edges <input type="color" data-key="semanticEdge" /></label>
       <label>Hierarchy edges <input type="color" data-key="containEdge" /></label>
       <label>Selection color <input type="color" data-key="selectionColor" /></label>
-      <label>Search L1 highlight <input type="color" data-key="searchL1Color" /></label>
-      <label>Search L2 highlight <input type="color" data-key="searchL2Color" /></label>
+      <label>Search highlight <input type="color" data-key="searchHighlightColor" /></label>
       <div id="settings-actions">
         <button id="settings-apply">Apply</button>
         <button id="settings-save">Save</button>
@@ -112,6 +87,13 @@
       <div id="doc-panel-header">
         <span id="doc-title"></span>
         <button id="doc-close" title="Close">&times;</button>
+      </div>
+      <div id="doc-meta" class="hidden">
+        <select id="doc-meta-l1"></select>
+        <span class="doc-meta-sep">/</span>
+        <select id="doc-meta-l2"></select>
+        <input id="doc-meta-new-l2" type="text" placeholder="New subcategory…" />
+        <button id="doc-meta-move">Move</button>
       </div>
       <div id="doc-content"></div>
     </div>

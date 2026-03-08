@@ -5,7 +5,7 @@
 // ── State ──────────────────────────────────────────────────────────────────
 let graphData = null;
 let network = null;
-let searchHighlight = null;    // { l1Id, l2Id } | null
+let searchHighlight = null;    // { l1Id, l2Id, docId } | null
 let nodesDataRef = null;
 let edgesDataRef = null;
 let nodePositionCache = {};    // { [nodeId]: {x, y} } — persists across renderGraph calls
@@ -21,9 +21,8 @@ const PRESET_LIGHT = {
   docBg: "#ffffff", docBorder: "#475569",
   semanticEdge: "#64748b",
   containEdge: "#a78bfa",
-  selectionColor: "#06b6d4",   // cyan — clearly distinct from amber search highlight
-  searchL1Color: "#fb923c",
-  searchL2Color: "#fbbf24",
+  selectionColor: "#06b6d4",
+  searchHighlightColor: "#fbbf24",
 };
 const PRESET_DARK = {
   l1Bg: "#3b82f6", l1Border: "#60a5fa",
@@ -31,9 +30,8 @@ const PRESET_DARK = {
   docBg: "#1e293b", docBorder: "#64748b",
   semanticEdge: "#94a3b8",
   containEdge: "#7c3aed",
-  selectionColor: "#22d3ee",   // cyan — clearly distinct from amber search highlight
-  searchL1Color: "#f97316",
-  searchL2Color: "#f59e0b",
+  selectionColor: "#22d3ee",
+  searchHighlightColor: "#f59e0b",
 };
 
 let colorMode = "auto";
@@ -127,9 +125,15 @@ window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () 
 const NETWORK_OPTIONS = {
   physics: {
     enabled: true,
-    solver: "forceAtlas2Based",
-    forceAtlas2Based: { gravitationalConstant: -60, centralGravity: 0.01, springLength: 120, springConstant: 0.08 },
-    stabilization: { iterations: 150 },
+    solver: "barnesHut",
+    barnesHut: {
+      gravitationalConstant: -8000,
+      centralGravity: 0.1,
+      springLength: 150,
+      springConstant: 0.04,
+      avoidOverlap: 1,
+    },
+    stabilization: { iterations: 200 },
   },
   interaction: { hover: true, tooltipDelay: 200 },
   edges: {
@@ -279,20 +283,11 @@ function styledNodes(nodes) {
     }
     let extra = {};
     if (searchHighlight) {
-      if (n.id === searchHighlight.docId)
+      const hl = appColors.searchHighlightColor;
+      if (n.id === searchHighlight.docId || n.id === searchHighlight.l2Id || n.id === searchHighlight.l1Id)
         extra = {
-          color: { background: "#fbbf24", border: "#b45309", highlight: { background: "#fbbf24", border: "#b45309" } },
+          color: { background: hl, border: "#b45309", highlight: { background: hl, border: "#b45309" } },
           font: { color: "#1e2229" },
-        };
-      else if (n.id === searchHighlight.l2Id)
-        extra = {
-          color: { background: appColors.searchL2Color, border: "#d97706", highlight: { background: appColors.searchL2Color, border: "#d97706" } },
-          font: { color: "#1e2229" },
-        };
-      else if (n.id === searchHighlight.l1Id)
-        extra = {
-          color: { background: appColors.searchL1Color, border: "#ea580c", highlight: { background: appColors.searchL1Color, border: "#ea580c" } },
-          font: { color: "#ffffff" },
         };
     }
     return { ...n, ...style, ...sizeOverride, ...extra };
@@ -590,18 +585,25 @@ function onNodeClick(params) {
   if (!node) return;
 
   if (node.level === 3 && node.file) {
-    openDoc(node.file, node.label);
+    openDoc(node.file, node.label, node);
   }
 }
 
 // ── Doc panel ──────────────────────────────────────────────────────────────
-async function openDoc(filename, title) {
+async function openDoc(filename, title, docNode) {
   const titleEl = document.getElementById("doc-title");
   const contentEl = document.getElementById("doc-content");
 
   titleEl.textContent = title;
   contentEl.innerHTML = "<p style='color:#6b7280'>Loading…</p>";
   showDocPanel();
+
+  if (docNode) {
+    showDocMeta(docNode);
+  } else {
+    docMetaEl.classList.add("hidden");
+    currentDocNode = null;
+  }
 
   const res = await fetch(`/api/doc/${encodeURIComponent(filename)}`);
   if (!res.ok) {
@@ -619,6 +621,8 @@ const resizeHandle = document.getElementById("resize-handle");
 document.getElementById("doc-close").addEventListener("click", () => {
   docPanel.classList.add("hidden");
   resizeHandle.classList.add("hidden");
+  docMetaEl.classList.add("hidden");
+  currentDocNode = null;
 });
 
 function showDocPanel() {
@@ -746,15 +750,9 @@ function onNodeRightClick(params) {
   if (!params.nodes.length) return;
   const node = graphData.nodes.find(n => n.id === params.nodes[0]);
   if (!node) return;
-  if (node.level !== 2 && node.level !== 3) return;
+  if (node.level !== 2) return;
 
   contextNode = node;
-
-  // Show/hide menu items based on node level
-  const l2Only = ctxMenu.querySelectorAll(".ctx-l2-only");
-  const l3Only = ctxMenu.querySelectorAll(".ctx-l3-only");
-  l2Only.forEach(el => el.style.display = node.level === 2 ? "" : "none");
-  l3Only.forEach(el => el.style.display = node.level === 3 ? "" : "none");
 
   ctxMenu.style.left = `${params.event.clientX}px`;
   ctxMenu.style.top  = `${params.event.clientY}px`;
@@ -822,64 +820,58 @@ document.getElementById("merge-cancel").addEventListener("click", () => {
   mergeOverlay.classList.add("hidden");
 });
 
-// ── Move doc ─────────────────────────────────────────────────────────────────
-const moveDocOverlay = document.getElementById("move-doc-overlay");
-const moveDocL1Select = document.getElementById("move-doc-l1-select");
-const moveDocL2Select = document.getElementById("move-doc-l2-select");
-const moveDocNewL2 = document.getElementById("move-doc-new-l2");
+// ── Move doc (inline in doc viewer pane) ────────────────────────────────────
+const docMetaEl = document.getElementById("doc-meta");
+const docMetaL1 = document.getElementById("doc-meta-l1");
+const docMetaL2 = document.getElementById("doc-meta-l2");
+const docMetaNewL2 = document.getElementById("doc-meta-new-l2");
+let currentDocNode = null;   // doc node currently shown in viewer
 
-function populateMoveDocL2(l1Label) {
-  const l2Nodes = graphData.nodes.filter(n => n.level === 2 && n.l1 === l1Label);
-  moveDocL2Select.innerHTML = l2Nodes.map(n => {
+function populateDocMetaL2(l1Label, selectedL2) {
+  const l2Nodes = graphData ? graphData.nodes.filter(n => n.level === 2 && n.l1 === l1Label) : [];
+  docMetaL2.innerHTML = l2Nodes.map(n => {
     const base = n._baseLabel || n.label;
-    return `<option value="${base}">${base}</option>`;
+    return `<option value="${base}"${base === selectedL2 ? " selected" : ""}>${base}</option>`;
   }).join("");
 }
 
-document.getElementById("ctx-move-doc").addEventListener("click", () => {
-  if (!contextNode) return;
-  const savedNode = contextNode;
-  hideContextMenu();
-  contextNode = savedNode;
+function showDocMeta(docNode) {
+  currentDocNode = docNode;
+  docMetaNewL2.value = "";
 
-  document.getElementById("move-doc-label").textContent = savedNode.label;
-  moveDocNewL2.value = "";
-
-  // Populate L1 dropdown
-  const l1Nodes = graphData.nodes.filter(n => n.level === 1);
-  moveDocL1Select.innerHTML = l1Nodes.map(n => {
+  const l1Nodes = graphData ? graphData.nodes.filter(n => n.level === 1) : [];
+  docMetaL1.innerHTML = l1Nodes.map(n => {
     const base = n._baseLabel || n.label;
-    return `<option value="${base}"${base === savedNode.l1 ? " selected" : ""}>${base}</option>`;
+    return `<option value="${base}"${base === docNode.l1 ? " selected" : ""}>${base}</option>`;
   }).join("");
+  populateDocMetaL2(docNode.l1, docNode.l2);
 
-  // Populate L2 dropdown for current L1
-  populateMoveDocL2(savedNode.l1);
+  docMetaEl.classList.remove("hidden");
+}
 
-  moveDocOverlay.classList.remove("hidden");
+docMetaL1.addEventListener("change", () => {
+  populateDocMetaL2(docMetaL1.value, null);
+  docMetaNewL2.value = "";
 });
 
-moveDocL1Select.addEventListener("change", () => {
-  populateMoveDocL2(moveDocL1Select.value);
-});
+document.getElementById("doc-meta-move").addEventListener("click", async () => {
+  if (!currentDocNode) return;
 
-document.getElementById("move-doc-confirm").addEventListener("click", async () => {
-  if (!contextNode) return;
-
-  const newL1 = moveDocL1Select.value;
-  const newL2Raw = moveDocNewL2.value.trim();
-  const newL2 = newL2Raw || moveDocL2Select.value;
+  const newL1 = docMetaL1.value;
+  const newL2Raw = docMetaNewL2.value.trim();
+  const newL2 = newL2Raw || docMetaL2.value;
   const createNew = !!newL2Raw;
 
-  const oldL1 = contextNode.l1;
-  const oldL2 = contextNode.l2;
+  const oldL1 = currentDocNode.l1;
+  const oldL2 = currentDocNode.l2;
 
-  moveDocOverlay.classList.add("hidden");
+  if (newL1 === oldL1 && newL2 === oldL2 && !createNew) return;
 
   const res = await fetch("/api/doc/move", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      filename: contextNode.file,
+      filename: currentDocNode.file,
       old_l1: oldL1,
       old_l2: oldL2,
       new_l1: newL1,
@@ -888,13 +880,9 @@ document.getElementById("move-doc-confirm").addEventListener("click", async () =
     }),
   });
   if (!res.ok) { alert("Move failed."); return; }
-  contextNode = null;
+  currentDocNode = null;
+  docMetaEl.classList.add("hidden");
   await reloadGraph();
-});
-
-document.getElementById("move-doc-cancel").addEventListener("click", () => {
-  moveDocOverlay.classList.add("hidden");
-  contextNode = null;
 });
 
 // ── Keyword search ──────────────────────────────────────────────────────────
@@ -960,7 +948,7 @@ async function runSearch() {
       activeResultLi = li;
 
       const label = docNode ? docNode.label : match.filename;
-      openDoc(match.filename, label);
+      openDoc(match.filename, label, docNode || null);
 
       if (docNode) {
         searchHighlight = {

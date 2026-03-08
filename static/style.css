@@ -282,69 +282,53 @@ main {
 #merge-confirm:hover { background: var(--accent-hover); }
 #merge-cancel:hover { background: var(--border); }
 
-/* ── Move-doc dialog overlay ── */
-#move-doc-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 2000;
-  background: rgba(0,0,0,0.35);
+/* ── Doc meta bar (category / subcategory / move) ── */
+#doc-meta {
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
 }
-#move-doc-overlay.hidden { display: none; }
+#doc-meta.hidden { display: none; }
 
-#move-doc-dialog {
-  background: var(--surface);
-  border-radius: var(--radius);
-  padding: 24px;
-  min-width: 340px;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-#move-doc-dialog h3 { font-size: 1rem; }
-
-.move-doc-row, .move-doc-new-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.move-doc-row label, .move-doc-new-row label {
+#doc-meta-l1, #doc-meta-l2 {
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
   font-size: 0.8rem;
-  color: var(--text-muted);
-  min-width: 100px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
 }
-#move-doc-l1-select, #move-doc-l2-select, #move-doc-new-l2 {
+.doc-meta-sep {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+#doc-meta-new-l2 {
   flex: 1;
-  padding: 7px 10px;
+  min-width: 100px;
+  padding: 3px 7px;
   border: 1px solid var(--border);
-  border-radius: 5px;
-  font-size: 0.875rem;
+  border-radius: 4px;
+  font-size: 0.8rem;
   background: var(--surface);
   color: var(--text);
 }
-.move-doc-new-row {
-  border-top: 1px solid var(--border);
-  padding-top: 10px;
-  margin-top: -4px;
-}
-.move-doc-new-row label::before { content: "— or — "; color: var(--text-muted); font-size: 0.75rem; }
-
-#move-doc-actions { display: flex; gap: 8px; justify-content: flex-end; }
-#move-doc-actions button {
-  padding: 7px 18px;
-  border-radius: 5px;
-  font-size: 0.875rem;
+#doc-meta-new-l2::placeholder { color: var(--text-muted); }
+#doc-meta-move {
+  padding: 3px 12px;
+  border-radius: 4px;
+  font-size: 0.8rem;
   cursor: pointer;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text);
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  white-space: nowrap;
 }
-#move-doc-confirm { background: var(--accent); color: #fff; border-color: var(--accent); }
-#move-doc-confirm:hover { background: var(--accent-hover); }
-#move-doc-cancel:hover { background: var(--border); }
+#doc-meta-move:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 
 /* ── Resize handle ── */
 #resize-handle {
