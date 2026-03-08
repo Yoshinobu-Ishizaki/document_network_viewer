@@ -12,6 +12,7 @@ let currentLevel = "root";     // "root" | "l1" | "l2"
 let currentL1 = null;
 let currentL2 = null;
 let searchHighlight = null;    // { l1Id, l2Id } | null — baked into styledNodes
+let nodesDataRef = null;       // reference to the active vis.js nodes DataSet
 
 // ── Color presets ──────────────────────────────────────────────────────────
 const PRESET_LIGHT = {
@@ -157,6 +158,12 @@ function nodesForLevel(level, l1, l2) {
   if (level === "root") {
     return graphData.nodes.filter(n => n.level === 1);
   }
+  if (level === "all-l2") {
+    return [
+      ...graphData.nodes.filter(n => n.level === 1),
+      ...graphData.nodes.filter(n => n.level === 2),
+    ];
+  }
   if (level === "l1") {
     return [
       ...graphData.nodes.filter(n => n.level === 1),
@@ -228,11 +235,17 @@ function renderLevel(level, l1, l2) {
   const nodeIds = allNodes.map(n => n.id);
   const edges = edgesForNodes(nodeIds);
 
+  const nodesDataset = new vis.DataSet(styledNodes(allNodes));
+  nodesDataRef = nodesDataset;
   const dataset = {
-    nodes: new vis.DataSet(styledNodes(allNodes)),
+    nodes: nodesDataset,
     edges: new vis.DataSet(edges),
   };
-  searchHighlight = null;  // clear after baking into dataset
+
+  // Capture and clear highlight before setData; re-apply via RAF to guard
+  // against vis.js's async resize re-draw overriding the baked-in colors.
+  const hl = searchHighlight;
+  searchHighlight = null;
 
   const container = document.getElementById("graph");
 
@@ -243,6 +256,18 @@ function renderLevel(level, l1, l2) {
     network.on("doubleClick", onNodeDoubleClick);
     network.on("click", onNodeClick);
     network.on("oncontext", onNodeRightClick);
+  }
+
+  if (hl) {
+    requestAnimationFrame(() => {
+      if (nodesDataRef !== nodesDataset) return; // a newer renderLevel replaced the dataset
+      const updates = [];
+      if (nodesDataset.get(hl.l2Id))
+        updates.push({ id: hl.l2Id, color: { background: "#fbbf24", border: "#d97706" }, font: { color: "#1e2229" } });
+      if (nodesDataset.get(hl.l1Id))
+        updates.push({ id: hl.l1Id, color: { background: "#fb923c", border: "#ea580c" }, font: { color: "#ffffff" } });
+      if (updates.length) nodesDataset.update(updates);
+    });
   }
 
   updateBreadcrumb(level, l1, l2);
@@ -262,6 +287,13 @@ function onNodeDoubleClick(params) {
   }
   // level 3 (doc) is handled by single-click
 }
+
+document.getElementById("expand-all-btn").addEventListener("click", () => {
+  renderLevel("all-l2", null, null);
+});
+document.getElementById("collapse-all-btn").addEventListener("click", () => {
+  renderLevel("root", null, null);
+});
 
 function onNodeClick(params) {
   if (!params.nodes.length) return;
@@ -360,6 +392,10 @@ function updateBreadcrumb(level, l1, l2) {
 
   if (level === "root") {
     bc.appendChild(crumb("All", null, true));
+  } else if (level === "all-l2") {
+    bc.appendChild(crumb("All", () => renderLevel("root", null, null), false));
+    bc.appendChild(sep());
+    bc.appendChild(crumb("Expanded", null, true));
   } else if (level === "l1") {
     bc.appendChild(crumb("All", () => renderLevel("root", null, null), false));
     bc.appendChild(sep());
@@ -405,6 +441,7 @@ document.addEventListener("click", (e) => {
 document.getElementById("ctx-rename").addEventListener("click", async () => {
   if (!contextNode) return;
   const oldName = contextNode._baseLabel || contextNode.label;
+  const nodeL1 = contextNode.l1;  // capture before hideContextMenu sets contextNode = null
   hideContextMenu();
 
   const newName = prompt(`Rename "${oldName}" to:`, oldName);
@@ -413,7 +450,7 @@ document.getElementById("ctx-rename").addEventListener("click", async () => {
   const res = await fetch("/api/subcategory", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ l1: contextNode.l1, old_l2: oldName, new_l2: newName.trim() }),
+    body: JSON.stringify({ l1: nodeL1, old_l2: oldName, new_l2: newName.trim() }),
   });
   if (!res.ok) { alert("Rename failed."); return; }
   if (currentLevel === "l2" && currentL2 === oldName) {
@@ -474,9 +511,12 @@ const searchResults = document.getElementById("search-results");
 const searchResultsList = document.getElementById("search-results-list");
 const searchResultsLabel = document.getElementById("search-results-label");
 
+let activeResultLi = null;  // currently highlighted search result item
+
 function closeSearchResults() {
   searchResults.classList.add("hidden");
   searchInput.value = "";
+  activeResultLi = null;
 }
 
 document.getElementById("search-results-close").addEventListener("click", closeSearchResults);
@@ -494,6 +534,7 @@ async function runSearch() {
   searchResultsLabel.textContent = "Searching…";
   searchResultsList.innerHTML = "";
   searchResults.classList.remove("hidden");
+  activeResultLi = null;
 
   const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
   if (!res.ok) {
@@ -519,6 +560,11 @@ async function runSearch() {
     `;
 
     li.addEventListener("click", () => {
+      // Move selection highlight to this item
+      if (activeResultLi) activeResultLi.classList.remove("result-selected");
+      li.classList.add("result-selected");
+      activeResultLi = li;
+
       // Always open doc panel first (works even if docNode not in graph)
       const label = docNode ? docNode.label : match.filename;
       openDoc(match.filename, label);

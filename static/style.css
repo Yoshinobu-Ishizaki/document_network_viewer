@@ -165,6 +165,10 @@ header h1 {
   border-bottom: 1px solid var(--bg);
 }
 #search-results-list li:hover { background: var(--bg); }
+#search-results-list li.result-selected { background: var(--accent); }
+#search-results-list li.result-selected:hover { background: var(--accent-hover); }
+#search-results-list li.result-selected .result-name { color: #fff; }
+#search-results-list li.result-selected .result-snippet { color: rgba(255,255,255,0.75); }
 #search-results-list .result-name {
   font-size: 0.85rem;
   font-weight: 500;
@@ -482,3 +486,20 @@ main {
 #settings-save { background: var(--accent); color: #fff; border-color: var(--accent); }
 #settings-save:hover { background: var(--accent-hover); }
 #settings-reset:hover { background: var(--border); }
+
+/* ── Expand / Collapse all buttons ── */
+#expand-all-btn, #collapse-all-btn {
+  padding: 5px 8px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+#expand-all-btn:hover, #collapse-all-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
