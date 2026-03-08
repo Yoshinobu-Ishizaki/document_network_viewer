@@ -1,5 +1,6 @@
 - [x] Do not restrict max docs in a subcategory.
 - [x] Remember nodes' position when app ends. Write it back those position data to file before quitting. Please recommend the good way to implement it.
-- [ ] When docs belonging category/subcategory is changed, search result list must be refreshed to update each docs category/subcategory data.
+- [x] Also remember open/close state of each nodes.
 - [ ] When subcategory is selected and it is opened, docs beloinging to it must be highlighted in a same selection highlight color.
-- [ ] Fore default nodes' locaton for docs must be near its belonging subcategory node. nodes location of subcategories should be near to its parent category node. Add "rearange node" button next to Expand/collapse button to recalculate node position for all.
+- [ ] For default nodes' locaton for docs must be near its belonging subcategory node. nodes location of subcategories should be near to its parent category node. Add "rearange node" button next to Expand/collapse button to recalculate node position for all.
+- [ ] When docs belonging category/subcategory is changed, search result list must be refreshed to update each docs category/subcategory data.

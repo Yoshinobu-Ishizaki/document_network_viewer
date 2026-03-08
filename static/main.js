@@ -165,11 +165,13 @@ async function init() {
   graphData = await graphRes.json();
   applyDocCounts(graphData);
 
-  // Load saved node positions from server
-  const posRes = await fetch("/api/positions");
-  if (posRes.ok) {
-    const saved = await posRes.json();
-    Object.assign(nodePositionCache, saved);
+  // Load saved UI state (positions + expand state) from server
+  const stateRes = await fetch("/api/ui-state");
+  if (stateRes.ok) {
+    const saved = await stateRes.json();
+    if (saved.positions) Object.assign(nodePositionCache, saved.positions);
+    if (saved.expandedL1s) expandedL1s = new Set(saved.expandedL1s);
+    if (saved.expandedL2s) expandedL2s = new Set(saved.expandedL2s);
   }
 
   // Restore search panel width from localStorage
@@ -1041,23 +1043,29 @@ document.getElementById("settings-reset").addEventListener("click", async () => 
 });
 
 // ── Position persistence ──────────────────────────────────────────────────────
-async function savePositions() {
+function buildUiState() {
+  return {
+    positions: network ? network.getPositions() : {},
+    expandedL1s: [...expandedL1s],
+    expandedL2s: [...expandedL2s],
+  };
+}
+
+async function saveState() {
   if (!network) return;
-  const positions = network.getPositions();
-  await fetch("/api/positions", {
+  await fetch("/api/ui-state", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(positions),
+    body: JSON.stringify(buildUiState()),
   }).catch(() => {});
 }
 
 window.addEventListener("beforeunload", () => {
   if (!network) return;
-  const positions = network.getPositions();
-  fetch("/api/positions", {
+  fetch("/api/ui-state", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(positions),
+    body: JSON.stringify(buildUiState()),
     keepalive: true,
   });
 });
@@ -1065,7 +1073,7 @@ window.addEventListener("beforeunload", () => {
 // ── Quit ─────────────────────────────────────────────────────────────────────
 document.getElementById("quit-btn").addEventListener("click", async () => {
   if (!confirm("Stop the server and quit?")) return;
-  await savePositions();
+  await saveState();
   await fetch("/api/quit", { method: "POST" }).catch(() => {});
   window.close();
   document.body.innerHTML =
