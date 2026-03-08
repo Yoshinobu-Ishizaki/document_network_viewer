@@ -261,7 +261,12 @@ app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
 
 if __name__ == "__main__":
+    import argparse
     import uvicorn
+
+    parser = argparse.ArgumentParser(description="Document Network Viewer")
+    parser.add_argument("--port", type=int, default=8001, help="Port to listen on (default: 8001)")
+    args = parser.parse_args()
 
     # Skip auto-open when running via SSH (VS Code Remote-SSH port-forwarding
     # already opens a browser tab automatically).
@@ -273,8 +278,8 @@ if __name__ == "__main__":
         def _open_browser() -> None:
             import time
             time.sleep(1.0)  # wait for server to bind
-            webbrowser.open("http://localhost:8001")
+            webbrowser.open(f"http://localhost:{args.port}")
 
         threading.Thread(target=_open_browser, daemon=True).start()
 
-    uvicorn.run("app:app", host="127.0.0.1", port=8001, reload=True)
+    uvicorn.run("app:app", host="127.0.0.1", port=args.port, reload=True)

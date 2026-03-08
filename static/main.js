@@ -11,6 +11,7 @@ let currentL2 = null;
 let searchHighlight = null;    // { l1Id, l2Id } | null
 let nodesDataRef = null;
 let edgesDataRef = null;
+let nodePositionCache = {};    // { [nodeId]: {x, y} } — persists across renderLevel calls
 
 // ── Color presets ──────────────────────────────────────────────────────────
 const PRESET_LIGHT = {
@@ -281,6 +282,11 @@ function renderLevel(level, l1, l2) {
   currentL1 = l1;
   currentL2 = l2;
 
+  // Snapshot positions before wiping the graph so they can be restored after setData
+  if (network) {
+    Object.assign(nodePositionCache, network.getPositions());
+  }
+
   const allNodes = nodesForLevel(level, l1, l2);
   const nodeIds = allNodes.map(n => n.id);
   const edges = edgesForNodes(nodeIds);
@@ -304,6 +310,20 @@ function renderLevel(level, l1, l2) {
     network.on("oncontext", onNodeRightClick);
   }
 
+  // Restore saved positions and pin them so physics doesn't move them;
+  // only new/unseen nodes will float during stabilization.
+  const pinnedUpdates = [];
+  for (const n of allNodes) {
+    const saved = nodePositionCache[n.id];
+    if (saved) {
+      network.moveNode(n.id, saved.x, saved.y);
+      pinnedUpdates.push({ id: n.id, fixed: { x: true, y: true } });
+    }
+  }
+  if (pinnedUpdates.length) {
+    nodesDataset.update(pinnedUpdates);
+  }
+
   // Disable physics after layout so nodes stay put.
   // Uses network.on + manual removal (network.once is not in vis-network 9.1.9's public API).
   // Fallback timer ensures the graph appears even if the event never fires.
@@ -311,12 +331,14 @@ function renderLevel(level, l1, l2) {
   const onStabilized = () => {
     network.off("stabilizationIterationsDone", onStabilized);
     clearTimeout(physicsOffTimer);
+    nodesDataset.update(allNodes.map(n => ({ id: n.id, fixed: false })));
     network.setOptions({ physics: { enabled: false } });
     network.fit();
   };
   network.on("stabilizationIterationsDone", onStabilized);
   physicsOffTimer = setTimeout(() => {
     network.off("stabilizationIterationsDone", onStabilized);
+    nodesDataset.update(allNodes.map(n => ({ id: n.id, fixed: false })));
     network.setOptions({ physics: { enabled: false } });
     network.fit();
   }, 5000);
@@ -558,6 +580,7 @@ async function reloadGraph() {
   graphData = await res.json();
   applyDocCounts(graphData);
   searchHighlight = null;
+  nodePositionCache = {};
   renderLevel(currentLevel, currentL1, currentL2);
 }
 
@@ -631,12 +654,7 @@ async function runSearch() {
           l1Id: `l1:${docNode.l1}`,
           l2Id: `l2:${docNode.l1}:${docNode.l2}`,
         };
-        // If already on the correct l2 view, just refresh colors (preserves positions)
-        if (currentLevel === "l2" && currentL1 === docNode.l1 && currentL2 === docNode.l2) {
-          refreshDisplayedColors();
-        } else {
-          renderLevel("l2", docNode.l1, docNode.l2);
-        }
+        refreshDisplayedColors();  // Highlight visible nodes without navigating
       }
     });
 
