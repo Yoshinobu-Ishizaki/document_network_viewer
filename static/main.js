@@ -11,14 +11,80 @@ let network = null;            // vis.js Network instance
 let currentLevel = "root";     // "root" | "l1" | "l2"
 let currentL1 = null;
 let currentL2 = null;
+let searchHighlight = null;    // { l1Id, l2Id } | null — baked into styledNodes
 
-// ── vis.js visual options ──────────────────────────────────────────────────
-const LEVEL_STYLES = {
-  1: { color: { background: "#3b82f6", border: "#1d4ed8", highlight: { background: "#2563eb", border: "#1e40af" } }, font: { color: "#ffffff", size: 15, face: "sans-serif" }, shape: "ellipse", size: 28 },
-  2: { color: { background: "#8b5cf6", border: "#6d28d9", highlight: { background: "#7c3aed", border: "#5b21b6" } }, font: { color: "#ffffff", size: 13, face: "sans-serif" }, shape: "ellipse", size: 22 },
-  3: { color: { background: "#ffffff", border: "#94a3b8", highlight: { background: "#f0f9ff", border: "#3b82f6" } }, font: { color: "#1e2229", size: 12, face: "sans-serif" }, shape: "box", size: 16 },
+// ── Color presets ──────────────────────────────────────────────────────────
+const PRESET_LIGHT = {
+  l1Bg: "#2563eb", l1Border: "#1d4ed8",
+  l2Bg: "#7c3aed", l2Border: "#6d28d9",
+  docBg: "#ffffff", docBorder: "#475569",
+  semanticEdge: "#64748b",
+  containEdge: "#a78bfa",
+};
+const PRESET_DARK = {
+  l1Bg: "#3b82f6", l1Border: "#60a5fa",
+  l2Bg: "#a78bfa", l2Border: "#c4b5fd",
+  docBg: "#1e293b", docBorder: "#64748b",
+  semanticEdge: "#94a3b8",
+  containEdge: "#7c3aed",
 };
 
+let colorMode = "auto";          // "light" | "dark" | "auto"
+let appColors = { ...PRESET_LIGHT };
+let currentSavedSettings = {};   // last response from /api/settings
+
+const THEME_LABELS = { light: "☀ Light", dark: "🌙 Dark", auto: "⚙ Auto" };
+const THEME_ORDER = ["light", "dark", "auto"];
+
+function resolveEffectiveTheme() {
+  if (colorMode === "auto")
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return colorMode;
+}
+
+function buildLevelStyles() {
+  const docFont = resolveEffectiveTheme() === "dark" ? "#f1f5f9" : "#1e2229";
+  return {
+    1: { color: { background: appColors.l1Bg, border: appColors.l1Border, highlight: { background: appColors.l1Bg, border: appColors.l1Border } }, font: { color: "#ffffff", size: 15, face: "sans-serif" }, shape: "ellipse", size: 28 },
+    2: { color: { background: appColors.l2Bg, border: appColors.l2Border, highlight: { background: appColors.l2Bg, border: appColors.l2Border } }, font: { color: "#ffffff", size: 13, face: "sans-serif" }, shape: "ellipse", size: 22 },
+    3: { color: { background: appColors.docBg, border: appColors.docBorder, highlight: { background: appColors.docBg, border: "#3b82f6" } }, font: { color: docFont, size: 12, face: "sans-serif" }, shape: "box", size: 16 },
+  };
+}
+
+let LEVEL_STYLES = buildLevelStyles();
+
+function applyColorOptions() {
+  if (network) network.setOptions({ edges: { color: { color: appColors.semanticEdge, highlight: appColors.semanticEdge } } });
+}
+
+function applyTheme(colors) {
+  Object.assign(appColors, colors);
+  LEVEL_STYLES = buildLevelStyles();
+  document.documentElement.setAttribute("data-theme", resolveEffectiveTheme());
+  if (network) {
+    renderLevel(currentLevel, currentL1, currentL2);
+    applyColorOptions();
+  }
+}
+
+function loadThemeColors(savedSettings) {
+  colorMode = savedSettings.colorMode || "auto";
+  const theme = resolveEffectiveTheme();
+  const preset = theme === "dark" ? PRESET_DARK : PRESET_LIGHT;
+  const saved = savedSettings[theme + "Colors"] || {};
+  applyTheme({ ...preset, ...saved });
+}
+
+// React to OS dark/light preference changes when in "auto" mode
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+  if (colorMode !== "auto") return;
+  const theme = resolveEffectiveTheme();
+  const preset = theme === "dark" ? PRESET_DARK : PRESET_LIGHT;
+  const saved = currentSavedSettings[theme + "Colors"] || {};
+  applyTheme({ ...preset, ...saved });
+});
+
+// ── vis.js network options ──────────────────────────────────────────────────
 const NETWORK_OPTIONS = {
   physics: {
     enabled: true,
@@ -28,7 +94,7 @@ const NETWORK_OPTIONS = {
   },
   interaction: { hover: true, tooltipDelay: 200 },
   edges: {
-    color: { color: "#cbd5e1", highlight: "#94a3b8" },
+    color: { color: "#64748b", highlight: "#64748b" },
     width: 1.5,
     smooth: { type: "continuous" },
     arrows: { to: { enabled: false } },
@@ -38,21 +104,31 @@ const NETWORK_OPTIONS = {
 
 // ── Initialise ─────────────────────────────────────────────────────────────
 async function init() {
-  const res = await fetch("/api/graph");
-  if (!res.ok) {
+  const [graphRes, settingsRes] = await Promise.all([
+    fetch("/api/graph"),
+    fetch("/api/settings"),
+  ]);
+
+  if (!graphRes.ok) {
     document.getElementById("graph").innerHTML =
       `<p style="padding:20px;color:#ef4444">Failed to load graph data.<br>Run <code>uv run preprocess.py</code> first.</p>`;
     return;
   }
-  graphData = await res.json();
+
+  currentSavedSettings = settingsRes.ok ? await settingsRes.json() : {};
+  loadThemeColors(currentSavedSettings);
+  document.getElementById("theme-btn").textContent = THEME_LABELS[colorMode];
+
+  graphData = await graphRes.json();
   applyDocCounts(graphData);
   renderLevel("root", null, null);
+  applyColorOptions();
 }
 
 // ── Document counts ────────────────────────────────────────────────────────
 function applyDocCounts(data) {
-  const l1Count = {};   // l1 label → total doc count
-  const l2Count = {};   // "l1\0l2" → doc count
+  const l1Count = {};
+  const l2Count = {};
 
   for (const n of data.nodes) {
     if (n.level !== 3) continue;
@@ -75,21 +151,19 @@ function applyDocCounts(data) {
   }
 }
 
-// ── Render helpers ─────────────────────────────────────────────────────────
+// ── Render helpers ──────────────────────────────────────────────────────────
 
 function nodesForLevel(level, l1, l2) {
   if (level === "root") {
     return graphData.nodes.filter(n => n.level === 1);
   }
   if (level === "l1") {
-    // All L1 nodes stay visible; expand selected L1's L2 nodes alongside them
     return [
       ...graphData.nodes.filter(n => n.level === 1),
       ...graphData.nodes.filter(n => n.level === 2 && n.l1 === l1),
     ];
   }
   if (level === "l2") {
-    // All L1 nodes + all L2s of parent L1 + docs of selected L2
     return [
       ...graphData.nodes.filter(n => n.level === 1),
       ...graphData.nodes.filter(n => n.level === 2 && n.l1 === l1),
@@ -105,15 +179,43 @@ function edgesForNodes(nodeIds) {
   for (const n of graphData.nodes) {
     if (idSet.has(n.id)) levelOf[n.id] = n.level;
   }
-  return graphData.edges
+
+  // Same-level semantic edges
+  const semanticEdges = graphData.edges
     .filter(e => idSet.has(e.from) && idSet.has(e.to) && levelOf[e.from] === levelOf[e.to])
     .map(e => e.width != null ? { ...e, width: e.width } : e);
+
+  // Containment edges (parent → child, dashed)
+  const containmentEdges = [];
+  for (const n of graphData.nodes) {
+    if (!idSet.has(n.id)) continue;
+    if (n.level === 2) {
+      const l1Id = `l1:${n.l1}`;
+      if (idSet.has(l1Id)) {
+        containmentEdges.push({ from: l1Id, to: n.id, dashes: true, width: 1, color: { color: appColors.containEdge } });
+      }
+    } else if (n.level === 3) {
+      const l2Id = `l2:${n.l1}:${n.l2}`;
+      if (idSet.has(l2Id)) {
+        containmentEdges.push({ from: l2Id, to: n.id, dashes: true, width: 1, color: { color: appColors.containEdge } });
+      }
+    }
+  }
+
+  return [...semanticEdges, ...containmentEdges];
 }
 
 function styledNodes(nodes) {
   return nodes.map(n => {
     const style = LEVEL_STYLES[n.level] || {};
-    return { ...n, ...style };
+    let extra = {};
+    if (searchHighlight) {
+      if (n.id === searchHighlight.l2Id)
+        extra = { color: { background: "#fbbf24", border: "#d97706" }, font: { color: "#1e2229" } };
+      else if (n.id === searchHighlight.l1Id)
+        extra = { color: { background: "#fb923c", border: "#ea580c" }, font: { color: "#ffffff" } };
+    }
+    return { ...n, ...style, ...extra };
   });
 }
 
@@ -130,6 +232,7 @@ function renderLevel(level, l1, l2) {
     nodes: new vis.DataSet(styledNodes(allNodes)),
     edges: new vis.DataSet(edges),
   };
+  searchHighlight = null;  // clear after baking into dataset
 
   const container = document.getElementById("graph");
 
@@ -145,15 +248,13 @@ function renderLevel(level, l1, l2) {
   updateBreadcrumb(level, l1, l2);
 }
 
-// ── Interaction ────────────────────────────────────────────────────────────
+// ── Interaction ─────────────────────────────────────────────────────────────
 function onNodeDoubleClick(params) {
   if (!params.nodes.length) return;
   const nodeId = params.nodes[0];
   const node = graphData.nodes.find(n => n.id === nodeId);
   if (!node) return;
 
-  // Double-click L1 from any level → expand that L1's subcategories
-  // Double-click L2 from any level → expand that L2's documents
   if (node.level === 1) {
     renderLevel("l1", node._baseLabel || node.label, null);
   } else if (node.level === 2) {
@@ -173,7 +274,7 @@ function onNodeClick(params) {
   }
 }
 
-// ── Doc panel ─────────────────────────────────────────────────────────────
+// ── Doc panel ──────────────────────────────────────────────────────────────
 async function openDoc(filename, title) {
   const titleEl = document.getElementById("doc-title");
   const contentEl = document.getElementById("doc-content");
@@ -200,17 +301,15 @@ document.getElementById("doc-close").addEventListener("click", () => {
   resizeHandle.classList.add("hidden");
 });
 
-// Show resize handle whenever doc panel opens
 function showDocPanel() {
   docPanel.classList.remove("hidden");
   resizeHandle.classList.remove("hidden");
 }
 
-// ── Resizable doc panel ────────────────────────────────────────────────────
+// ── Resizable doc panel ─────────────────────────────────────────────────────
 const PANEL_MIN = 200;
 const PANEL_MAX_RATIO = 0.8;
 
-// Restore saved width from previous session
 const savedWidth = localStorage.getItem("docPanelWidth");
 if (savedWidth) docPanel.style.width = `${savedWidth}px`;
 
@@ -239,7 +338,7 @@ resizeHandle.addEventListener("mousedown", (e) => {
   window.addEventListener("mouseup", onMouseUp);
 });
 
-// ── Breadcrumb ────────────────────────────────────────────────────────────
+// ── Breadcrumb ──────────────────────────────────────────────────────────────
 function updateBreadcrumb(level, l1, l2) {
   const bc = document.getElementById("breadcrumb");
   bc.innerHTML = "";
@@ -274,8 +373,8 @@ function updateBreadcrumb(level, l1, l2) {
   }
 }
 
-// ── Rename / Merge subcategories ──────────────────────────────────────────
-let contextNode = null;  // L2 node currently targeted by right-click menu
+// ── Rename / Merge subcategories ────────────────────────────────────────────
+let contextNode = null;
 
 const ctxMenu = document.getElementById("context-menu");
 const mergeOverlay = document.getElementById("merge-overlay");
@@ -317,8 +416,6 @@ document.getElementById("ctx-rename").addEventListener("click", async () => {
     body: JSON.stringify({ l1: contextNode.l1, old_l2: oldName, new_l2: newName.trim() }),
   });
   if (!res.ok) { alert("Rename failed."); return; }
-  // If the renamed node was the current L2 anchor, update currentL2 so
-  // reloadGraph can still find the view after the name change.
   if (currentLevel === "l2" && currentL2 === oldName) {
     currentL2 = newName.trim();
   }
@@ -331,7 +428,6 @@ document.getElementById("ctx-merge").addEventListener("click", () => {
   const sourceL1 = contextNode.l1;
   hideContextMenu();
 
-  // Build list of other L2 nodes in the same L1
   const others = graphData.nodes.filter(n =>
     n.level === 2 && n.l1 === sourceL1 && (n._baseLabel || n.label) !== sourceName
   );
@@ -371,7 +467,7 @@ async function reloadGraph() {
   renderLevel(currentLevel, currentL1, currentL2);
 }
 
-// ── Keyword search ────────────────────────────────────────────────────────
+// ── Keyword search ──────────────────────────────────────────────────────────
 const searchInput = document.getElementById("search-input");
 const searchBtn = document.getElementById("search-btn");
 const searchResults = document.getElementById("search-results");
@@ -414,7 +510,6 @@ async function runSearch() {
   searchResultsLabel.textContent = `${data.matches.length} result(s) for "${q}"`;
 
   for (const match of data.matches) {
-    // Find the doc node in graphData
     const docNode = graphData?.nodes.find(n => n.level === 3 && n.file === match.filename);
 
     const li = document.createElement("li");
@@ -424,11 +519,16 @@ async function runSearch() {
     `;
 
     li.addEventListener("click", () => {
+      // Always open doc panel first (works even if docNode not in graph)
+      const label = docNode ? docNode.label : match.filename;
+      openDoc(match.filename, label);
       if (docNode) {
-        // Navigate to the doc's L2 view, then open the doc panel.
-        // Keep the search panel and input visible.
+        // Set highlight state BEFORE renderLevel so styledNodes bakes it in
+        searchHighlight = {
+          l1Id: `l1:${docNode.l1}`,
+          l2Id: `l2:${docNode.l1}:${docNode.l2}`,
+        };
         renderLevel("l2", docNode.l1, docNode.l2);
-        openDoc(docNode.file, docNode.label);
       }
     });
 
@@ -436,12 +536,65 @@ async function runSearch() {
   }
 }
 
-// ── Quit ──────────────────────────────────────────────────────────────────
+// ── Theme toggle ────────────────────────────────────────────────────────────
+document.getElementById("theme-btn").addEventListener("click", async () => {
+  const idx = THEME_ORDER.indexOf(colorMode);
+  colorMode = THEME_ORDER[(idx + 1) % 3];
+  document.getElementById("theme-btn").textContent = THEME_LABELS[colorMode];
+  const theme = resolveEffectiveTheme();
+  const preset = theme === "dark" ? PRESET_DARK : PRESET_LIGHT;
+  const saved = currentSavedSettings[theme + "Colors"] || {};
+  applyTheme({ ...preset, ...saved });
+  await saveSettings();
+});
+
+// ── Color settings panel ────────────────────────────────────────────────────
+async function saveSettings() {
+  currentSavedSettings.colorMode = colorMode;
+  await fetch("/api/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(currentSavedSettings),
+  });
+}
+
+document.getElementById("settings-btn").addEventListener("click", () => {
+  const panel = document.getElementById("settings-panel");
+  panel.classList.toggle("hidden");
+  panel.querySelectorAll("input[data-key]").forEach(inp => {
+    inp.value = appColors[inp.dataset.key] || "#000000";
+  });
+});
+
+document.getElementById("settings-close").addEventListener("click", () => {
+  document.getElementById("settings-panel").classList.add("hidden");
+});
+
+document.getElementById("settings-save").addEventListener("click", async () => {
+  const updated = {};
+  document.querySelectorAll("#settings-panel input[data-key]").forEach(inp => {
+    updated[inp.dataset.key] = inp.value;
+  });
+  const theme = resolveEffectiveTheme();
+  currentSavedSettings[theme + "Colors"] = updated;
+  applyTheme(updated);
+  document.getElementById("settings-panel").classList.add("hidden");
+  await saveSettings();
+});
+
+document.getElementById("settings-reset").addEventListener("click", async () => {
+  const theme = resolveEffectiveTheme();
+  delete currentSavedSettings[theme + "Colors"];
+  const preset = theme === "dark" ? PRESET_DARK : PRESET_LIGHT;
+  applyTheme(preset);
+  await saveSettings();
+});
+
+// ── Quit ─────────────────────────────────────────────────────────────────────
 document.getElementById("quit-btn").addEventListener("click", async () => {
   if (!confirm("Stop the server and quit?")) return;
   await fetch("/api/quit", { method: "POST" }).catch(() => {});
   window.close();
-  // Fallback message if the browser blocked window.close() (user-opened tabs):
   document.body.innerHTML =
     `<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;color:#6b7280;">
       <p>Server stopped. You can close this tab.</p>

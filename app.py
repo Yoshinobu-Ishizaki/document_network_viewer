@@ -21,7 +21,7 @@ from typing import Any
 
 import frontmatter
 import markdown as md
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -30,6 +30,9 @@ DATA_DIR = Path("data")
 INDEX_FILE = DATA_DIR / "index.json"
 TEXT_CACHE_DIR = DATA_DIR / ".text_cache"
 STATIC_DIR = Path("static")
+SETTINGS_FILE = Path("settings.json")
+
+DEFAULT_SETTINGS: dict = {"colorMode": "auto", "lightColors": {}, "darkColors": {}}
 
 app = FastAPI(title="Document Network Viewer")
 
@@ -237,6 +240,22 @@ def merge_subcategory(req: MergeRequest) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
+@app.get("/api/settings")
+def get_settings() -> JSONResponse:
+    if SETTINGS_FILE.exists():
+        with open(SETTINGS_FILE, encoding="utf-8") as f:
+            saved = json.load(f)
+        return JSONResponse({**DEFAULT_SETTINGS, **saved})
+    return JSONResponse(DEFAULT_SETTINGS)
+
+
+@app.post("/api/settings")
+def save_settings(body: dict = Body(...)) -> JSONResponse:
+    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(body, f, ensure_ascii=False, indent=2)
+    return JSONResponse({"status": "ok"})
+
+
 # Serve static files (must be after API routes)
 app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
@@ -244,10 +263,18 @@ app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 if __name__ == "__main__":
     import uvicorn
 
-    def _open_browser() -> None:
-        import time
-        time.sleep(1.0)  # wait for server to bind
-        webbrowser.open("http://localhost:8000")
+    # Skip auto-open when running via SSH (VS Code Remote-SSH port-forwarding
+    # already opens a browser tab automatically).
+    _in_ssh = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"))
 
-    threading.Thread(target=_open_browser, daemon=True).start()
+    if not _in_ssh and not os.environ.get("_APP_BROWSER_OPENED"):
+        os.environ["_APP_BROWSER_OPENED"] = "1"
+
+        def _open_browser() -> None:
+            import time
+            time.sleep(1.0)  # wait for server to bind
+            webbrowser.open("http://localhost:8000")
+
+        threading.Thread(target=_open_browser, daemon=True).start()
+
     uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)

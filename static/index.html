@@ -18,6 +18,8 @@
       <button id="search-btn" title="Search">&#128269;</button>
     </div>
     <h1>Document Network Viewer</h1>
+    <button id="theme-btn" title="Toggle color mode">☀ Light</button>
+    <button id="settings-btn" title="Color settings">⚙ Colors</button>
     <button id="quit-btn" title="Stop server and quit">Quit</button>
   </header>
 
@@ -44,6 +46,26 @@
       <div id="merge-actions">
         <button id="merge-confirm">Merge</button>
         <button id="merge-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings panel -->
+  <div id="settings-panel" class="hidden">
+    <div id="settings-panel-header">
+      <span>Color Settings</span>
+      <button id="settings-close">&times;</button>
+    </div>
+    <div id="settings-body">
+      <label>L1 nodes <input type="color" data-key="l1Bg" /></label>
+      <label>L2 nodes <input type="color" data-key="l2Bg" /></label>
+      <label>Doc nodes <input type="color" data-key="docBg" /></label>
+      <label>Doc border <input type="color" data-key="docBorder" /></label>
+      <label>Semantic edges <input type="color" data-key="semanticEdge" /></label>
+      <label>Hierarchy edges <input type="color" data-key="containEdge" /></label>
+      <div id="settings-actions">
+        <button id="settings-save">Save</button>
+        <button id="settings-reset">Reset</button>
       </div>
     </div>
   </div>
