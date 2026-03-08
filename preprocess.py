@@ -492,41 +492,6 @@ def build_index(categorized: list[dict]) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
-def split_subcategory(
-    client: LLMClient,
-    l1: str,
-    l2: str,
-    docs: list[dict],
-    categories: list[str],
-) -> list[dict]:
-    """Ask LLM to split an oversized subcategory into two. Returns updated doc list."""
-    docs_str = "\n\n".join(
-        f"[{i + 1}] filename: {d['filename']}\ncontent snippet:\n{d['content']}"
-        for i, d in enumerate(docs)
-    )
-    prompt = f"""You are reorganizing documents within the subcategory "{l2}" (under L1: "{l1}").
-
-Split these {len(docs)} documents into exactly TWO more specific subcategories.
-Give each new subcategory a short name (2-4 words, same language style as "{l2}").
-Assign every document to one of the two new subcategories.
-
-Respond ONLY with a valid JSON array, no extra text:
-[
-  {{"index": 1, "l2": "<new subcategory name>"}},
-  ...
-]
-
-Documents:
-{docs_str}"""
-
-    text = client.chat(prompt)
-    start, end = text.find("["), text.rfind("]") + 1
-    results = json.loads(text[start:end])
-    updated = list(docs)
-    for r in results:
-        updated[r["index"] - 1] = {**updated[r["index"] - 1], "l2": r["l2"]}
-    return updated
-
 
 def apply_constraints(
     categorized: list[dict],
@@ -540,7 +505,6 @@ def apply_constraints(
 
     max_subcats = constraints.get("max_subcategories", 999)
     min_docs = constraints.get("min_docs_per_subcategory", 1)
-    max_docs = constraints.get("max_docs_per_subcategory", 9999)
 
     # Group by l1
     by_l1: dict[str, list[dict]] = {}
@@ -616,16 +580,6 @@ def apply_constraints(
                 d["l2"] = best_l2
             del groups[l2_small]
             groups = get_groups(docs)
-
-        # ── Split large subcategories ─────────────────────────────────────────
-        groups = get_groups(docs)
-        for l2, ds in list(groups.items()):
-            if len(ds) > max_docs and len(groups) < max_subcats:
-                print(f"  Splitting large subcat '{l2}' ({len(ds)} docs) in {l1}")
-                updated = split_subcategory(client, l1, l2, ds, categories)
-                for d_old, d_new in zip(ds, updated):
-                    d_old["l2"] = d_new["l2"]
-                groups = get_groups(sum(groups.values(), []))
 
         result.extend(sum(groups.values(), []))
 

@@ -1,4 +1,4 @@
-- [ ] Do not restrict max docs in a subcategory.
+- [x] Do not restrict max docs in a subcategory.
 - [ ] Remember nodes' position when app ends. Write it back those position data to file before quitting. Please recommend the good way to implement it.
 - [ ] When docs belonging category/subcategory is changed, search result list must be refreshed to update each docs category/subcategory data.
 - [ ] When subcategory is selected and it is opened, docs beloinging to it must be highlighted in a same selection highlight color.

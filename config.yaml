@@ -10,4 +10,3 @@ categories:
 subcategory_constraints:
   max_subcategories: 8        # hard upper limit on L2 count per L1 category
   min_docs_per_subcategory: 2 # merge L2s smaller than this into the nearest neighbor
-  max_docs_per_subcategory: 20 # split L2s larger than this (if max_subcategories not reached)
