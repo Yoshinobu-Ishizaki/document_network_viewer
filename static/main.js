@@ -279,7 +279,12 @@ function styledNodes(nodes) {
     }
     let extra = {};
     if (searchHighlight) {
-      if (n.id === searchHighlight.l2Id)
+      if (n.id === searchHighlight.docId)
+        extra = {
+          color: { background: "#fbbf24", border: "#b45309", highlight: { background: "#fbbf24", border: "#b45309" } },
+          font: { color: "#1e2229" },
+        };
+      else if (n.id === searchHighlight.l2Id)
         extra = {
           color: { background: appColors.searchL2Color, border: "#d97706", highlight: { background: appColors.searchL2Color, border: "#d97706" } },
           font: { color: "#1e2229" },
@@ -833,21 +838,22 @@ function populateMoveDocL2(l1Label) {
 
 document.getElementById("ctx-move-doc").addEventListener("click", () => {
   if (!contextNode) return;
-  const docLabel = contextNode.label;
+  const savedNode = contextNode;
   hideContextMenu();
+  contextNode = savedNode;
 
-  document.getElementById("move-doc-label").textContent = docLabel;
+  document.getElementById("move-doc-label").textContent = savedNode.label;
   moveDocNewL2.value = "";
 
   // Populate L1 dropdown
   const l1Nodes = graphData.nodes.filter(n => n.level === 1);
   moveDocL1Select.innerHTML = l1Nodes.map(n => {
     const base = n._baseLabel || n.label;
-    return `<option value="${base}"${base === contextNode.l1 ? " selected" : ""}>${base}</option>`;
+    return `<option value="${base}"${base === savedNode.l1 ? " selected" : ""}>${base}</option>`;
   }).join("");
 
   // Populate L2 dropdown for current L1
-  populateMoveDocL2(contextNode.l1);
+  populateMoveDocL2(savedNode.l1);
 
   moveDocOverlay.classList.remove("hidden");
 });
@@ -960,6 +966,7 @@ async function runSearch() {
         searchHighlight = {
           l1Id: `l1:${docNode.l1}`,
           l2Id: `l2:${docNode.l1}:${docNode.l2}`,
+          docId: docNode.id,
         };
         // Expand the doc's L1 and L2 so search highlight is visible
         expandedL1s.add(docNode.l1);
