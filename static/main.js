@@ -165,6 +165,13 @@ async function init() {
   graphData = await graphRes.json();
   applyDocCounts(graphData);
 
+  // Load saved node positions from server
+  const posRes = await fetch("/api/positions");
+  if (posRes.ok) {
+    const saved = await posRes.json();
+    Object.assign(nodePositionCache, saved);
+  }
+
   // Restore search panel width from localStorage
   const savedSearchW = localStorage.getItem("searchPanelWidth");
   if (savedSearchW) {
@@ -1033,9 +1040,32 @@ document.getElementById("settings-reset").addEventListener("click", async () => 
   await saveSettings();
 });
 
+// ── Position persistence ──────────────────────────────────────────────────────
+async function savePositions() {
+  if (!network) return;
+  const positions = network.getPositions();
+  await fetch("/api/positions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(positions),
+  }).catch(() => {});
+}
+
+window.addEventListener("beforeunload", () => {
+  if (!network) return;
+  const positions = network.getPositions();
+  fetch("/api/positions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(positions),
+    keepalive: true,
+  });
+});
+
 // ── Quit ─────────────────────────────────────────────────────────────────────
 document.getElementById("quit-btn").addEventListener("click", async () => {
   if (!confirm("Stop the server and quit?")) return;
+  await savePositions();
   await fetch("/api/quit", { method: "POST" }).catch(() => {});
   window.close();
   document.body.innerHTML =

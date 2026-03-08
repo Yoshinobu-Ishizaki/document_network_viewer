@@ -21,13 +21,14 @@ from typing import Any
 
 import frontmatter
 import markdown as md
-from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 DATA_DIR = Path("data")
 INDEX_FILE = DATA_DIR / "index.json"
+POSITIONS_FILE = DATA_DIR / "positions.json"
 TEXT_CACHE_DIR = DATA_DIR / ".text_cache"
 STATIC_DIR = Path("static")
 SETTINGS_FILE = Path("settings.json")
@@ -171,6 +172,20 @@ def search_docs(q: str = Query(..., min_length=1)) -> JSONResponse:
                 seen_files.add(original)
 
     return JSONResponse({"query": q, "matches": matches})
+
+
+@app.get("/api/positions")
+def get_positions() -> JSONResponse:
+    if POSITIONS_FILE.exists():
+        return JSONResponse(json.loads(POSITIONS_FILE.read_text()))
+    return JSONResponse({})
+
+
+@app.post("/api/positions")
+async def save_positions(request: Request) -> JSONResponse:
+    data = await request.json()
+    POSITIONS_FILE.write_text(json.dumps(data))
+    return JSONResponse({"status": "ok"})
 
 
 @app.post("/api/quit")
