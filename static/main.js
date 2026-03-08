@@ -5,13 +5,14 @@
 // ── State ──────────────────────────────────────────────────────────────────
 let graphData = null;
 let network = null;
-let currentLevel = "root";
-let currentL1 = null;
-let currentL2 = null;
 let searchHighlight = null;    // { l1Id, l2Id } | null
 let nodesDataRef = null;
 let edgesDataRef = null;
-let nodePositionCache = {};    // { [nodeId]: {x, y} } — persists across renderLevel calls
+let nodePositionCache = {};    // { [nodeId]: {x, y} } — persists across renderGraph calls
+
+// Independent expand/collapse state (replaces drill-down navigation)
+let expandedL1s = new Set();   // L1 base labels
+let expandedL2s = new Set();   // L2 node IDs
 
 // ── Color presets ──────────────────────────────────────────────────────────
 const PRESET_LIGHT = {
@@ -20,7 +21,7 @@ const PRESET_LIGHT = {
   docBg: "#ffffff", docBorder: "#475569",
   semanticEdge: "#64748b",
   containEdge: "#a78bfa",
-  selectionColor: "#f59e0b",
+  selectionColor: "#06b6d4",   // cyan — clearly distinct from amber search highlight
   searchL1Color: "#fb923c",
   searchL2Color: "#fbbf24",
 };
@@ -30,7 +31,7 @@ const PRESET_DARK = {
   docBg: "#1e293b", docBorder: "#64748b",
   semanticEdge: "#94a3b8",
   containEdge: "#7c3aed",
-  selectionColor: "#fbbf24",
+  selectionColor: "#22d3ee",   // cyan — clearly distinct from amber search highlight
   searchL1Color: "#f97316",
   searchL2Color: "#f59e0b",
 };
@@ -82,7 +83,7 @@ function refreshDisplayedColors() {
   if (!nodesDataRef || !edgesDataRef) return;
   LEVEL_STYLES = buildLevelStyles();
 
-  const allNodes = nodesForLevel(currentLevel, currentL1, currentL2);
+  const allNodes = buildVisibleNodes();
   const nodeUpdates = styledNodes(allNodes).map(n => ({ id: n.id, color: n.color, font: n.font }));
   nodesDataRef.update(nodeUpdates);
 
@@ -159,7 +160,14 @@ async function init() {
 
   graphData = await graphRes.json();
   applyDocCounts(graphData);
-  renderLevel("root", null, null);
+
+  // Restore search panel width from localStorage
+  const savedSearchW = localStorage.getItem("searchPanelWidth");
+  if (savedSearchW) {
+    document.documentElement.style.setProperty("--search-panel-w", `${savedSearchW}px`);
+  }
+
+  renderGraph();
 }
 
 // ── Document counts ────────────────────────────────────────────────────────
@@ -188,34 +196,30 @@ function applyDocCounts(data) {
   }
 }
 
-// ── Render helpers ──────────────────────────────────────────────────────────
+// ── Visible nodes (expansion-based, replaces drill-down) ──────────────────
+function buildVisibleNodes() {
+  const visible = [];
+  const l1Nodes = graphData.nodes.filter(n => n.level === 1);
+  visible.push(...l1Nodes);
 
-function nodesForLevel(level, l1, l2) {
-  if (level === "root") {
-    return graphData.nodes.filter(n => n.level === 1);
+  for (const l1n of l1Nodes) {
+    const l1Label = l1n._baseLabel || l1n.label;
+    if (!expandedL1s.has(l1Label)) continue;
+    const l2Nodes = graphData.nodes.filter(n => n.level === 2 && n.l1 === l1Label);
+    visible.push(...l2Nodes);
+
+    for (const l2n of l2Nodes) {
+      if (!expandedL2s.has(l2n.id)) continue;
+      const l2Base = l2n._baseLabel || l2n.label;
+      const docNodes = graphData.nodes.filter(n =>
+        n.level === 3 && n.l1 === l1Label && n.l2 === l2Base);
+      visible.push(...docNodes);
+    }
   }
-  if (level === "all-l2") {
-    return [
-      ...graphData.nodes.filter(n => n.level === 1),
-      ...graphData.nodes.filter(n => n.level === 2),
-    ];
-  }
-  if (level === "l1") {
-    return [
-      ...graphData.nodes.filter(n => n.level === 1),
-      ...graphData.nodes.filter(n => n.level === 2 && n.l1 === l1),
-    ];
-  }
-  if (level === "l2") {
-    return [
-      ...graphData.nodes.filter(n => n.level === 1),
-      ...graphData.nodes.filter(n => n.level === 2 && n.l1 === l1),
-      ...graphData.nodes.filter(n => n.level === 3 && n.l1 === l1 && n.l2 === l2),
-    ];
-  }
-  return [];
+  return visible;
 }
 
+// ── Edges ──────────────────────────────────────────────────────────────────
 function edgesForNodes(nodeIds) {
   const idSet = new Set(nodeIds);
   const levelOf = {};
@@ -223,7 +227,6 @@ function edgesForNodes(nodeIds) {
     if (idSet.has(n.id)) levelOf[n.id] = n.level;
   }
 
-  // Semantic edges — explicit color, no inheritance
   const semanticEdges = graphData.edges
     .filter(e => idSet.has(e.from) && idSet.has(e.to) && levelOf[e.from] === levelOf[e.to])
     .map(e => ({
@@ -231,7 +234,6 @@ function edgesForNodes(nodeIds) {
       color: { color: appColors.semanticEdge, highlight: appColors.semanticEdge, inherit: false },
     }));
 
-  // Containment edges (parent → child, dashed)
   const containmentEdges = [];
   for (const n of graphData.nodes) {
     if (!idSet.has(n.id)) continue;
@@ -258,7 +260,6 @@ function edgesForNodes(nodeIds) {
 }
 
 function styledNodes(nodes) {
-  // Compute max ndocs per level for proportional size scaling
   const maxNdocs = { 1: 1, 2: 1 };
   for (const n of nodes) {
     if ((n.level === 1 || n.level === 2) && n.ndocs > maxNdocs[n.level]) {
@@ -271,10 +272,10 @@ function styledNodes(nodes) {
     let sizeOverride = {};
     if (n.level === 1 && n.ndocs) {
       const ratio = n.ndocs / maxNdocs[1];
-      sizeOverride = { size: Math.round(20 + ratio * 20) };  // 20–40
+      sizeOverride = { size: Math.round(20 + ratio * 20) };
     } else if (n.level === 2 && n.ndocs) {
       const ratio = n.ndocs / maxNdocs[2];
-      sizeOverride = { size: Math.round(14 + ratio * 16) };  // 14–30
+      sizeOverride = { size: Math.round(14 + ratio * 16) };
     }
     let extra = {};
     if (searchHighlight) {
@@ -293,21 +294,180 @@ function styledNodes(nodes) {
   });
 }
 
-function renderLevel(level, l1, l2) {
-  currentLevel = level;
-  currentL1 = l1;
-  currentL2 = l2;
+// ── MDS-based initial node positioning ────────────────────────────────────
 
-  // Snapshot positions before wiping the graph so they can be restored after setData
+function cosineSim(a, b) {
+  if (!a || !b) return 0;
+  let dot = 0, magA = 0, magB = 0;
+  for (const [k, v] of Object.entries(a)) {
+    magA += v * v;
+    if (b[k] != null) dot += v * b[k];
+  }
+  for (const v of Object.values(b)) magB += v * v;
+  if (magA === 0 || magB === 0) return 0;
+  return dot / (Math.sqrt(magA) * Math.sqrt(magB));
+}
+
+function powerIterate(B, n, iters = 60) {
+  // Returns [eigenvector, eigenvalue] for dominant eigenvector of B
+  let v = Array.from({ length: n }, () => Math.random() - 0.5);
+  let lambda = 0;
+  for (let iter = 0; iter < iters; iter++) {
+    // Bv
+    const Bv = Array(n).fill(0);
+    for (let i = 0; i < n; i++)
+      for (let j = 0; j < n; j++)
+        Bv[i] += B[i][j] * v[j];
+    // Norm
+    lambda = Math.sqrt(Bv.reduce((s, x) => s + x * x, 0));
+    if (lambda < 1e-10) break;
+    v = Bv.map(x => x / lambda);
+  }
+  return [v, lambda];
+}
+
+function deflate(B, v, lambda, n) {
+  // Deflation: B' = B - lambda * v * v^T
+  return B.map((row, i) => row.map((val, j) => val - lambda * v[i] * v[j]));
+}
+
+function computeInitialPositions(nodes, edges) {
+  const n = nodes.length;
+  if (n <= 2) return {};
+
+  // Build pairwise similarity from node.keywords
+  const sim = Array.from({ length: n }, () => new Array(n).fill(0));
+  for (let i = 0; i < n; i++) {
+    sim[i][i] = 1;
+    for (let j = i + 1; j < n; j++) {
+      // Only compare same-level nodes for meaningful similarity
+      if (nodes[i].level !== nodes[j].level) continue;
+      const s = cosineSim(nodes[i].keywords, nodes[j].keywords);
+      sim[i][j] = sim[j][i] = s;
+    }
+  }
+
+  // Merge in precomputed edge weights
+  const idxOf = {};
+  nodes.forEach((nd, i) => { idxOf[nd.id] = i; });
+  for (const e of edges) {
+    const i = idxOf[e.from], j = idxOf[e.to];
+    if (i != null && j != null && e.weight) {
+      sim[i][j] = sim[j][i] = Math.max(sim[i][j], e.weight);
+    }
+  }
+
+  // Dissimilarity matrix
+  const D = sim.map(row => row.map(s => 1 - s));
+
+  // Classical MDS: double-center D²
+  const D2 = D.map(row => row.map(v => v * v));
+  const rowMean = D2.map(row => row.reduce((a, b) => a + b, 0) / n);
+  const colMean = D2[0].map((_, j) => D2.reduce((a, row) => a + row[j], 0) / n);
+  const grand = rowMean.reduce((a, b) => a + b, 0) / n;
+  const B = D2.map((row, i) => row.map((v, j) => -0.5 * (v - rowMean[i] - colMean[j] + grand)));
+
+  const [v1, l1] = powerIterate(B, n);
+  const B2 = deflate(B, v1, l1, n);
+  const [v2, l2] = powerIterate(B2, n);
+
+  const SPREAD = 350;
+  const scale1 = Math.sqrt(Math.max(l1, 0)) || 1;
+  const scale2 = Math.sqrt(Math.max(l2, 0)) || 1;
+
+  const positions = {};
+  for (let i = 0; i < n; i++) {
+    positions[nodes[i].id] = {
+      x: v1[i] * scale1 * SPREAD,
+      y: v2[i] * scale2 * SPREAD,
+    };
+  }
+  return positions;
+}
+
+// Compute initial positions with hierarchical grouping:
+// - L1 nodes: MDS among themselves
+// - L2 nodes: MDS within each L1 group, offset relative to L1 parent
+// - Doc nodes: MDS within each L2 group, offset relative to L2 parent
+function computeHierarchicalPositions(allNodes, allEdges) {
+  const positions = {};
+
+  // L1 nodes
+  const l1Nodes = allNodes.filter(n => n.level === 1);
+  if (l1Nodes.length > 0) {
+    const l1Edges = allEdges.filter(e =>
+      l1Nodes.some(n => n.id === e.from) && l1Nodes.some(n => n.id === e.to));
+    const l1Pos = computeInitialPositions(l1Nodes, l1Edges);
+    Object.assign(positions, l1Pos);
+  }
+
+  // L2 nodes grouped by L1
+  const l2Nodes = allNodes.filter(n => n.level === 2);
+  const l2ByL1 = {};
+  for (const n of l2Nodes) {
+    (l2ByL1[n.l1] = l2ByL1[n.l1] || []).push(n);
+  }
+  for (const [l1Label, group] of Object.entries(l2ByL1)) {
+    const l1Id = `l1:${l1Label}`;
+    const l1Center = positions[l1Id] || { x: 0, y: 0 };
+    const groupEdges = allEdges.filter(e =>
+      group.some(n => n.id === e.from) && group.some(n => n.id === e.to));
+    const groupPos = computeInitialPositions(group, groupEdges);
+
+    // Offset so cluster is near L1 parent
+    const OFFSET = 400;
+    const angle = (Object.keys(l2ByL1).indexOf(l1Label) / Object.keys(l2ByL1).length) * 2 * Math.PI;
+    const ox = l1Center.x + Math.cos(angle) * OFFSET;
+    const oy = l1Center.y + Math.sin(angle) * OFFSET;
+    for (const [id, pos] of Object.entries(groupPos)) {
+      positions[id] = { x: pos.x + ox, y: pos.y + oy };
+    }
+    // If only 1 node, place near parent
+    if (group.length === 1) {
+      positions[group[0].id] = { x: ox, y: oy };
+    }
+  }
+
+  // Doc nodes grouped by L2
+  const docNodes = allNodes.filter(n => n.level === 3);
+  const docsByL2 = {};
+  for (const n of docNodes) {
+    const key = `l2:${n.l1}:${n.l2}`;
+    (docsByL2[key] = docsByL2[key] || []).push(n);
+  }
+  for (const [l2Id, group] of Object.entries(docsByL2)) {
+    const l2Center = positions[l2Id] || { x: 0, y: 0 };
+    const groupEdges = allEdges.filter(e =>
+      group.some(n => n.id === e.from) && group.some(n => n.id === e.to));
+    const groupPos = computeInitialPositions(group, groupEdges);
+
+    const OFFSET = 250;
+    const l2Keys = Object.keys(docsByL2);
+    const angle = (l2Keys.indexOf(l2Id) / Math.max(l2Keys.length, 1)) * 2 * Math.PI;
+    const ox = l2Center.x + Math.cos(angle) * OFFSET;
+    const oy = l2Center.y + Math.sin(angle) * OFFSET;
+    for (const [id, pos] of Object.entries(groupPos)) {
+      positions[id] = { x: pos.x + ox, y: pos.y + oy };
+    }
+    if (group.length === 1) {
+      positions[group[0].id] = { x: ox, y: oy };
+    }
+  }
+
+  return positions;
+}
+
+// ── Render ─────────────────────────────────────────────────────────────────
+function renderGraph() {
+  // Snapshot current positions before wiping
   if (network) {
     Object.assign(nodePositionCache, network.getPositions());
   }
 
-  const allNodes = nodesForLevel(level, l1, l2);
+  const allNodes = buildVisibleNodes();
   const nodeIds = allNodes.map(n => n.id);
   const edges = edgesForNodes(nodeIds);
 
-  // Bake current searchHighlight into node styles
   const nodesDataset = new vis.DataSet(styledNodes(allNodes));
   const edgesDataset = new vis.DataSet(edges);
   nodesDataRef = nodesDataset;
@@ -326,8 +486,17 @@ function renderLevel(level, l1, l2) {
     network.on("oncontext", onNodeRightClick);
   }
 
-  // Restore saved positions and pin them so physics doesn't move them;
-  // only new/unseen nodes will float during stabilization.
+  // Compute initial positions via MDS for nodes not yet in cache
+  const newNodes = allNodes.filter(n => !nodePositionCache[n.id]);
+  if (newNodes.length > 0) {
+    const newEdges = edgesForNodes(newNodes.map(n => n.id));
+    const initPos = computeHierarchicalPositions(newNodes, newEdges);
+    for (const [id, pos] of Object.entries(initPos)) {
+      nodePositionCache[id] = pos;
+    }
+  }
+
+  // Restore/apply positions and pin during stabilization
   const pinnedUpdates = [];
   for (const n of allNodes) {
     const saved = nodePositionCache[n.id];
@@ -340,9 +509,6 @@ function renderLevel(level, l1, l2) {
     nodesDataset.update(pinnedUpdates);
   }
 
-  // Disable physics after layout so nodes stay put.
-  // Uses network.on + manual removal (network.once is not in vis-network 9.1.9's public API).
-  // Fallback timer ensures the graph appears even if the event never fires.
   let physicsOffTimer;
   const onStabilized = () => {
     network.off("stabilizationIterationsDone", onStabilized);
@@ -359,13 +525,17 @@ function renderLevel(level, l1, l2) {
     network.fit();
   }, 5000);
 
-  updateBreadcrumb(level, l1, l2);
+  updateBreadcrumb();
 }
 
-// Navigate: clears search highlight before rendering
-function navigateTo(level, l1, l2) {
+async function reloadGraph() {
+  const res = await fetch("/api/graph");
+  if (!res.ok) return;
+  graphData = await res.json();
+  applyDocCounts(graphData);
   searchHighlight = null;
-  renderLevel(level, l1, l2);
+  nodePositionCache = {};
+  renderGraph();
 }
 
 // ── Interaction ─────────────────────────────────────────────────────────────
@@ -376,17 +546,36 @@ function onNodeDoubleClick(params) {
   if (!node) return;
 
   if (node.level === 1) {
-    navigateTo("l1", node._baseLabel || node.label, null);
+    const label = node._baseLabel || node.label;
+    if (expandedL1s.has(label)) {
+      expandedL1s.delete(label);
+      // Collapse all its L2s
+      graphData.nodes
+        .filter(n => n.level === 2 && n.l1 === label)
+        .forEach(l2 => expandedL2s.delete(l2.id));
+    } else {
+      expandedL1s.add(label);
+    }
   } else if (node.level === 2) {
-    navigateTo("l2", node.l1, node._baseLabel || node.label);
+    if (expandedL2s.has(nodeId)) {
+      expandedL2s.delete(nodeId);
+    } else {
+      expandedL2s.add(nodeId);
+    }
   }
+  renderGraph();
 }
 
 document.getElementById("expand-all-btn").addEventListener("click", () => {
-  navigateTo("all-l2", null, null);
+  graphData.nodes
+    .filter(n => n.level === 1)
+    .forEach(n => expandedL1s.add(n._baseLabel || n.label));
+  renderGraph();
 });
 document.getElementById("collapse-all-btn").addEventListener("click", () => {
-  navigateTo("root", null, null);
+  expandedL1s.clear();
+  expandedL2s.clear();
+  renderGraph();
 });
 
 function onNodeClick(params) {
@@ -436,8 +625,8 @@ function showDocPanel() {
 const PANEL_MIN = 200;
 const PANEL_MAX_RATIO = 0.8;
 
-const savedWidth = localStorage.getItem("docPanelWidth");
-if (savedWidth) docPanel.style.width = `${savedWidth}px`;
+const savedDocWidth = localStorage.getItem("docPanelWidth");
+if (savedDocWidth) docPanel.style.width = `${savedDocWidth}px`;
 
 resizeHandle.addEventListener("mousedown", (e) => {
   e.preventDefault();
@@ -464,46 +653,77 @@ resizeHandle.addEventListener("mousedown", (e) => {
   window.addEventListener("mouseup", onMouseUp);
 });
 
+// ── Resizable search panel ──────────────────────────────────────────────────
+const searchPanel = document.getElementById("search-results");
+const searchResizeHandle = document.getElementById("search-resize-handle");
+const SEARCH_PANEL_MIN = 200;
+const SEARCH_PANEL_MAX_RATIO = 0.6;
+
+searchResizeHandle.addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  searchResizeHandle.classList.add("dragging");
+  document.body.style.cursor = "col-resize";
+  document.body.style.userSelect = "none";
+
+  function onMouseMove(e) {
+    const maxW = window.innerWidth * SEARCH_PANEL_MAX_RATIO;
+    const newW = Math.min(maxW, Math.max(SEARCH_PANEL_MIN, e.clientX));
+    document.documentElement.style.setProperty("--search-panel-w", `${newW}px`);
+  }
+
+  function onMouseUp() {
+    searchResizeHandle.classList.remove("dragging");
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    const w = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--search-panel-w"));
+    localStorage.setItem("searchPanelWidth", w);
+    window.removeEventListener("mousemove", onMouseMove);
+    window.removeEventListener("mouseup", onMouseUp);
+  }
+
+  window.addEventListener("mousemove", onMouseMove);
+  window.addEventListener("mouseup", onMouseUp);
+});
+
 // ── Breadcrumb ──────────────────────────────────────────────────────────────
-function updateBreadcrumb(level, l1, l2) {
+function updateBreadcrumb() {
   const bc = document.getElementById("breadcrumb");
   bc.innerHTML = "";
 
-  function crumb(label, onClick, active) {
-    const span = document.createElement("span");
-    span.className = "crumb" + (active ? " active" : "");
-    span.textContent = label;
-    if (!active) span.addEventListener("click", onClick);
-    return span;
-  }
+  const nL1 = expandedL1s.size;
+  const nL2 = expandedL2s.size;
 
-  function sep() {
-    const s = document.createElement("span");
-    s.className = "crumb-sep";
-    s.textContent = "›";
-    return s;
+  const root = document.createElement("span");
+  root.className = "crumb" + (nL1 === 0 ? " active" : "");
+  root.textContent = "All";
+  if (nL1 > 0) {
+    root.addEventListener("click", () => {
+      expandedL1s.clear();
+      expandedL2s.clear();
+      renderGraph();
+    });
   }
+  bc.appendChild(root);
 
-  if (level === "root") {
-    bc.appendChild(crumb("All", null, true));
-  } else if (level === "all-l2") {
-    bc.appendChild(crumb("All", () => navigateTo("root", null, null), false));
-    bc.appendChild(sep());
-    bc.appendChild(crumb("Expanded", null, true));
-  } else if (level === "l1") {
-    bc.appendChild(crumb("All", () => navigateTo("root", null, null), false));
-    bc.appendChild(sep());
-    bc.appendChild(crumb(l1, null, true));
-  } else if (level === "l2") {
-    bc.appendChild(crumb("All", () => navigateTo("root", null, null), false));
-    bc.appendChild(sep());
-    bc.appendChild(crumb(l1, () => navigateTo("l1", l1, null), false));
-    bc.appendChild(sep());
-    bc.appendChild(crumb(l2, null, true));
+  if (nL1 > 0) {
+    const sep = document.createElement("span");
+    sep.className = "crumb-sep";
+    sep.textContent = "›";
+    bc.appendChild(sep);
+
+    const info = document.createElement("span");
+    info.className = "crumb active";
+    if (nL1 === 1) {
+      const l1Label = [...expandedL1s][0];
+      info.textContent = nL2 > 0 ? `${l1Label} (${nL2} subcategory open)` : l1Label;
+    } else {
+      info.textContent = `${nL1} categories open`;
+    }
+    bc.appendChild(info);
   }
 }
 
-// ── Rename / Merge subcategories ────────────────────────────────────────────
+// ── Context menus ────────────────────────────────────────────────────────────
 let contextNode = null;
 
 const ctxMenu = document.getElementById("context-menu");
@@ -520,9 +740,17 @@ function onNodeRightClick(params) {
 
   if (!params.nodes.length) return;
   const node = graphData.nodes.find(n => n.id === params.nodes[0]);
-  if (!node || node.level !== 2) return;
+  if (!node) return;
+  if (node.level !== 2 && node.level !== 3) return;
 
   contextNode = node;
+
+  // Show/hide menu items based on node level
+  const l2Only = ctxMenu.querySelectorAll(".ctx-l2-only");
+  const l3Only = ctxMenu.querySelectorAll(".ctx-l3-only");
+  l2Only.forEach(el => el.style.display = node.level === 2 ? "" : "none");
+  l3Only.forEach(el => el.style.display = node.level === 3 ? "" : "none");
+
   ctxMenu.style.left = `${params.event.clientX}px`;
   ctxMenu.style.top  = `${params.event.clientY}px`;
   ctxMenu.classList.remove("hidden");
@@ -532,6 +760,7 @@ document.addEventListener("click", (e) => {
   if (!ctxMenu.contains(e.target)) hideContextMenu();
 });
 
+// ── Rename subcategory ───────────────────────────────────────────────────────
 document.getElementById("ctx-rename").addEventListener("click", async () => {
   if (!contextNode) return;
   const oldName = contextNode._baseLabel || contextNode.label;
@@ -547,12 +776,10 @@ document.getElementById("ctx-rename").addEventListener("click", async () => {
     body: JSON.stringify({ l1: nodeL1, old_l2: oldName, new_l2: newName.trim() }),
   });
   if (!res.ok) { alert("Rename failed."); return; }
-  if (currentLevel === "l2" && currentL2 === oldName) {
-    currentL2 = newName.trim();
-  }
   await reloadGraph();
 });
 
+// ── Merge subcategory ────────────────────────────────────────────────────────
 document.getElementById("ctx-merge").addEventListener("click", () => {
   if (!contextNode) return;
   const sourceName = contextNode._baseLabel || contextNode.label;
@@ -590,15 +817,79 @@ document.getElementById("merge-cancel").addEventListener("click", () => {
   mergeOverlay.classList.add("hidden");
 });
 
-async function reloadGraph() {
-  const res = await fetch("/api/graph");
-  if (!res.ok) return;
-  graphData = await res.json();
-  applyDocCounts(graphData);
-  searchHighlight = null;
-  nodePositionCache = {};
-  renderLevel(currentLevel, currentL1, currentL2);
+// ── Move doc ─────────────────────────────────────────────────────────────────
+const moveDocOverlay = document.getElementById("move-doc-overlay");
+const moveDocL1Select = document.getElementById("move-doc-l1-select");
+const moveDocL2Select = document.getElementById("move-doc-l2-select");
+const moveDocNewL2 = document.getElementById("move-doc-new-l2");
+
+function populateMoveDocL2(l1Label) {
+  const l2Nodes = graphData.nodes.filter(n => n.level === 2 && n.l1 === l1Label);
+  moveDocL2Select.innerHTML = l2Nodes.map(n => {
+    const base = n._baseLabel || n.label;
+    return `<option value="${base}">${base}</option>`;
+  }).join("");
 }
+
+document.getElementById("ctx-move-doc").addEventListener("click", () => {
+  if (!contextNode) return;
+  const docLabel = contextNode.label;
+  hideContextMenu();
+
+  document.getElementById("move-doc-label").textContent = docLabel;
+  moveDocNewL2.value = "";
+
+  // Populate L1 dropdown
+  const l1Nodes = graphData.nodes.filter(n => n.level === 1);
+  moveDocL1Select.innerHTML = l1Nodes.map(n => {
+    const base = n._baseLabel || n.label;
+    return `<option value="${base}"${base === contextNode.l1 ? " selected" : ""}>${base}</option>`;
+  }).join("");
+
+  // Populate L2 dropdown for current L1
+  populateMoveDocL2(contextNode.l1);
+
+  moveDocOverlay.classList.remove("hidden");
+});
+
+moveDocL1Select.addEventListener("change", () => {
+  populateMoveDocL2(moveDocL1Select.value);
+});
+
+document.getElementById("move-doc-confirm").addEventListener("click", async () => {
+  if (!contextNode) return;
+
+  const newL1 = moveDocL1Select.value;
+  const newL2Raw = moveDocNewL2.value.trim();
+  const newL2 = newL2Raw || moveDocL2Select.value;
+  const createNew = !!newL2Raw;
+
+  const oldL1 = contextNode.l1;
+  const oldL2 = contextNode.l2;
+
+  moveDocOverlay.classList.add("hidden");
+
+  const res = await fetch("/api/doc/move", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      filename: contextNode.file,
+      old_l1: oldL1,
+      old_l2: oldL2,
+      new_l1: newL1,
+      new_l2: newL2,
+      create_new_l2: createNew,
+    }),
+  });
+  if (!res.ok) { alert("Move failed."); return; }
+  contextNode = null;
+  await reloadGraph();
+});
+
+document.getElementById("move-doc-cancel").addEventListener("click", () => {
+  moveDocOverlay.classList.add("hidden");
+  contextNode = null;
+});
 
 // ── Keyword search ──────────────────────────────────────────────────────────
 const searchInput = document.getElementById("search-input");
@@ -670,7 +961,10 @@ async function runSearch() {
           l1Id: `l1:${docNode.l1}`,
           l2Id: `l2:${docNode.l1}:${docNode.l2}`,
         };
-        refreshDisplayedColors();  // Highlight visible nodes without navigating
+        // Expand the doc's L1 and L2 so search highlight is visible
+        expandedL1s.add(docNode.l1);
+        expandedL2s.add(`l2:${docNode.l1}:${docNode.l2}`);
+        renderGraph();
       }
     });
 

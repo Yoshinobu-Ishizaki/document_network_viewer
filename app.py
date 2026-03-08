@@ -101,6 +101,15 @@ class MergeRequest(BaseModel):
     target_l2: str
 
 
+class MoveDocRequest(BaseModel):
+    filename: str
+    old_l1: str
+    old_l2: str
+    new_l1: str
+    new_l2: str
+    create_new_l2: bool = False
+
+
 def load_index() -> dict[str, Any]:
     if not INDEX_FILE.exists():
         raise HTTPException(status_code=503, detail="data/index.json not found. Run preprocess.py first.")
@@ -235,6 +244,85 @@ def merge_subcategory(req: MergeRequest) -> JSONResponse:
 
     # Remove the source L2 node
     data["nodes"] = [n for n in data["nodes"] if n.get("id") != source_id]
+
+    save_index(data)
+    return JSONResponse({"status": "ok"})
+
+
+@app.post("/api/doc/move")
+def move_doc(req: MoveDocRequest) -> JSONResponse:
+    new_l2 = req.new_l2.strip()
+    if not new_l2:
+        raise HTTPException(status_code=400, detail="New subcategory name cannot be empty.")
+
+    data = load_index()
+
+    # Find the doc node
+    doc_id = f"doc:{req.filename}"
+    doc_node = next((n for n in data["nodes"] if n.get("id") == doc_id), None)
+    if not doc_node:
+        raise HTTPException(status_code=404, detail=f"Document '{req.filename}' not found.")
+
+    old_l2_id = f"l2:{req.old_l1}:{req.old_l2}"
+    new_l2_id = f"l2:{req.new_l1}:{new_l2}"
+
+    # Ensure target L1 exists
+    target_l1_id = f"l1:{req.new_l1}"
+    if not any(n.get("id") == target_l1_id for n in data["nodes"]):
+        raise HTTPException(status_code=404, detail=f"Category '{req.new_l1}' not found.")
+
+    # Create new L2 if requested and not existing
+    if req.create_new_l2 and not any(n.get("id") == new_l2_id for n in data["nodes"]):
+        data["nodes"].append({
+            "id": new_l2_id,
+            "label": new_l2,
+            "level": 2,
+            "l1": req.new_l1,
+            "ndocs": 0,
+        })
+        data["edges"].append({
+            "from": target_l1_id,
+            "to": new_l2_id,
+            "dashes": True,
+            "width": 1,
+        })
+    elif not any(n.get("id") == new_l2_id for n in data["nodes"]):
+        raise HTTPException(status_code=404, detail=f"Subcategory '{new_l2}' not found in '{req.new_l1}'.")
+
+    # Update the doc node
+    doc_node["l1"] = req.new_l1
+    doc_node["l2"] = new_l2
+
+    # Remove old containment edge (old_l2 → doc), add new one (new_l2 → doc)
+    data["edges"] = [
+        e for e in data["edges"]
+        if not (e.get("from") == old_l2_id and e.get("to") == doc_id)
+    ]
+    data["edges"].append({"from": new_l2_id, "to": doc_id, "dashes": True, "width": 1})
+
+    # Recalculate ndocs for affected L2 and L1 nodes
+    l2_counts: dict[str, int] = {}
+    l1_counts: dict[str, int] = {}
+    for n in data["nodes"]:
+        if n.get("level") == 3:
+            l2_key = f"l2:{n['l1']}:{n['l2']}"
+            l2_counts[l2_key] = l2_counts.get(l2_key, 0) + 1
+            l1_key = f"l1:{n['l1']}"
+            l1_counts[l1_key] = l1_counts.get(l1_key, 0) + 1
+
+    for n in data["nodes"]:
+        if n.get("level") == 2:
+            n["ndocs"] = l2_counts.get(n["id"], 0)
+        elif n.get("level") == 1:
+            n["ndocs"] = l1_counts.get(n["id"], 0)
+
+    # Remove old L2 node if it now has no docs
+    if l2_counts.get(old_l2_id, 0) == 0 and old_l2_id != new_l2_id:
+        data["nodes"] = [n for n in data["nodes"] if n.get("id") != old_l2_id]
+        data["edges"] = [
+            e for e in data["edges"]
+            if e.get("from") != old_l2_id and e.get("to") != old_l2_id
+        ]
 
     save_index(data)
     return JSONResponse({"status": "ok"})

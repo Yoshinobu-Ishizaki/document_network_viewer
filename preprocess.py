@@ -15,9 +15,11 @@ API calls on subsequent runs.
 import argparse
 import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 import frontmatter
@@ -259,19 +261,23 @@ def _is_cjk(char: str) -> bool:
 
 
 def _keywords(text: str) -> set[str]:
-    """Return keyword tokens from text.
+    """Return keyword token set from text (used by constraint-enforcement code)."""
+    return set(_keyword_counts(text).keys())
 
-    For CJK (Japanese) runs: character bigrams (standard IR technique,
-    no tokenizer required).
+
+def _keyword_counts(text: str) -> Counter:
+    """Return term-frequency Counter from text.
+
+    For CJK (Japanese) runs: character bigrams.
     For ASCII/Latin runs: lowercased word tokens, stopwords removed.
     """
-    tokens: set[str] = set()
+    counts: Counter = Counter()
     cjk_run: list[str] = []
 
     def _flush_cjk() -> None:
         if len(cjk_run) >= 2:
             for i in range(len(cjk_run) - 1):
-                tokens.add(cjk_run[i] + cjk_run[i + 1])
+                counts[cjk_run[i] + cjk_run[i + 1]] += 1
         cjk_run.clear()
 
     for char in text:
@@ -285,9 +291,9 @@ def _keywords(text: str) -> set[str]:
     for word in text.lower().split():
         word = word.strip(".,;:!?\"'()[]{}/-")
         if len(word) >= 3 and word not in _STOPWORDS and not any(_is_cjk(c) for c in word):
-            tokens.add(word)
+            counts[word] += 1
 
-    return tokens
+    return counts
 
 
 def _jaccard(a: set, b: set) -> float:
@@ -296,18 +302,35 @@ def _jaccard(a: set, b: set) -> float:
     return len(a & b) / len(a | b)
 
 
+def _cosine(a: dict, b: dict) -> float:
+    """Cosine similarity between two TF-IDF weight dicts."""
+    if not a or not b:
+        return 0.0
+    shared = set(a) & set(b)
+    dot = sum(a[t] * b[t] for t in shared)
+    mag_a = math.sqrt(sum(v * v for v in a.values()))
+    mag_b = math.sqrt(sum(v * v for v in b.values()))
+    if mag_a == 0.0 or mag_b == 0.0:
+        return 0.0
+    return dot / (mag_a * mag_b)
+
+
+def _top_keywords(tfidf: dict, n: int = 30) -> dict:
+    """Return top-n keywords by TF-IDF score, rounded to 4 decimal places."""
+    top = sorted(tfidf.items(), key=lambda x: x[1], reverse=True)[:n]
+    return {k: round(v, 4) for k, v in top}
+
+
 def build_index(categorized: list[dict]) -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
 
     l1_seen: dict[str, str] = {}   # l1 label -> node id
     l2_seen: dict[tuple, str] = {}  # (l1, l2) -> node id
-    # For semantic edge computation
-    l2_keywords: dict[tuple, set] = {}   # (l1, l2) -> keyword set from doc contents
     l1_l2_names: dict[str, list[str]] = {}  # l1 -> list of l2 labels
     l1_doc_count: dict[str, int] = {}
     l2_doc_count: dict[tuple, int] = {}  # (l1, l2) -> doc count
-    doc_keywords: dict[str, set] = {}    # doc_id -> keyword set
+    doc_tf: dict[str, Counter] = {}       # doc_id -> raw term Counter
     docs_by_l2: dict[tuple, list[str]] = {}  # (l1, l2) -> [doc_id, ...]
 
     for doc in categorized:
@@ -330,10 +353,7 @@ def build_index(categorized: list[dict]) -> dict:
             l2_id = f"l2:{l1}:{l2}"
             l2_seen[l2_key] = l2_id
             nodes.append({"id": l2_id, "label": l2, "level": 2, "l1": l1})
-            l2_keywords[l2_key] = set()
             l1_l2_names[l1].append(l2)
-        # Accumulate keywords from doc content
-        l2_keywords[l2_key] |= _keywords(content)
 
         doc_id = f"doc:{doc['filename']}"
         nodes.append({
@@ -344,8 +364,7 @@ def build_index(categorized: list[dict]) -> dict:
             "l2": l2,
             "file": doc["filename"],
         })
-        doc_kw = _keywords(content)
-        doc_keywords[doc_id] = doc_kw
+        doc_tf[doc_id] = _keyword_counts(content)
         docs_by_l2.setdefault(l2_key, []).append(doc_id)
 
     # Set ndocs on L1 and L2 nodes now that counts are final
@@ -355,13 +374,66 @@ def build_index(categorized: list[dict]) -> dict:
         elif node["level"] == 2:
             node["ndocs"] = l2_doc_count.get((node["l1"], node["label"]), 0)
 
-    # ── Doc↔Doc semantic edges (within same L2, keyword Jaccard similarity) ──
+    # ── TF-IDF computation ───────────────────────────────────────────────────
+    N = len(doc_tf)  # total number of documents
+
+    # Document frequency: how many docs contain each term
+    df: Counter = Counter()
+    for counts in doc_tf.values():
+        for term in counts:
+            df[term] += 1
+
+    # IDF: log((N + 1) / (df + 1)) + 1  (smoothed)
+    def idf(term: str) -> float:
+        return math.log((N + 1) / (df[term] + 1)) + 1.0
+
+    # Build TF-IDF vectors per doc (normalised TF = count / doc_length)
+    doc_tfidf: dict[str, dict] = {}
+    for doc_id, counts in doc_tf.items():
+        total = sum(counts.values()) or 1
+        vec = {term: (count / total) * idf(term) for term, count in counts.items()}
+        doc_tfidf[doc_id] = vec
+
+    # Aggregate TF-IDF vectors per L2 (sum of doc vectors)
+    l2_tfidf: dict[tuple, dict] = {}
+    for l2_key, doc_ids in docs_by_l2.items():
+        agg: dict[str, float] = {}
+        for did in doc_ids:
+            for term, score in doc_tfidf[did].items():
+                agg[term] = agg.get(term, 0.0) + score
+        l2_tfidf[l2_key] = agg
+
+    # Aggregate TF-IDF vectors per L1 (sum of L2 vectors)
+    l1_tfidf: dict[str, dict] = {}
+    for l1 in l1_seen:
+        agg: dict[str, float] = {}
+        for l2_key, vec in l2_tfidf.items():
+            if l2_key[0] == l1:
+                for term, score in vec.items():
+                    agg[term] = agg.get(term, 0.0) + score
+        l1_tfidf[l1] = agg
+
+    # Store top-30 keywords on each node for client-side similarity computation
+    node_by_id = {n["id"]: n for n in nodes}
+    for doc_id, vec in doc_tfidf.items():
+        if doc_id in node_by_id:
+            node_by_id[doc_id]["keywords"] = _top_keywords(vec, 30)
+    for l2_key, vec in l2_tfidf.items():
+        l2_id = l2_seen[l2_key]
+        if l2_id in node_by_id:
+            node_by_id[l2_id]["keywords"] = _top_keywords(vec, 30)
+    for l1, vec in l1_tfidf.items():
+        l1_id = l1_seen[l1]
+        if l1_id in node_by_id:
+            node_by_id[l1_id]["keywords"] = _top_keywords(vec, 30)
+
+    # ── Doc↔Doc semantic edges (within same L2, TF-IDF cosine similarity) ───
     for doc_ids_in_l2 in docs_by_l2.values():
         for i in range(len(doc_ids_in_l2)):
             for j in range(i + 1, len(doc_ids_in_l2)):
                 da, db = doc_ids_in_l2[i], doc_ids_in_l2[j]
-                sim = _jaccard(doc_keywords[da], doc_keywords[db])
-                if sim >= 0.05:
+                sim = _cosine(doc_tfidf[da], doc_tfidf[db])
+                if sim >= 0.01:
                     width = max(1, min(8, round(sim * 20)))
                     edges.append({
                         "from": da,
@@ -370,15 +442,15 @@ def build_index(categorized: list[dict]) -> dict:
                         "width": width,
                     })
 
-    # ── L2↔L2 semantic edges (within same L1, keyword Jaccard similarity) ───
+    # ── L2↔L2 semantic edges (within same L1, TF-IDF cosine similarity) ─────
     l2_keys = list(l2_seen.keys())
     for i in range(len(l2_keys)):
         for j in range(i + 1, len(l2_keys)):
             ka, kb = l2_keys[i], l2_keys[j]
             if ka[0] != kb[0]:  # must share same L1
                 continue
-            sim = _jaccard(l2_keywords[ka], l2_keywords[kb])
-            if sim >= 0.05:
+            sim = _cosine(l2_tfidf[ka], l2_tfidf[kb])
+            if sim >= 0.01:
                 width = max(1, min(8, round(sim * 20)))
                 edges.append({
                     "from": l2_seen[ka],
@@ -387,22 +459,15 @@ def build_index(categorized: list[dict]) -> dict:
                     "width": width,
                 })
 
-    # ── L1↔L1 edges (shared subcategory topic words) ────────────────────────
+    # ── L1↔L1 edges (TF-IDF cosine similarity of aggregated content) ────────
     l1_list = list(l1_seen.keys())
     for i in range(len(l1_list)):
         for j in range(i + 1, len(l1_list)):
             la, lb = l1_list[i], l1_list[j]
-            words_a = set()
-            for name in l1_l2_names[la]:
-                words_a |= _keywords(name)
-            words_b = set()
-            for name in l1_l2_names[lb]:
-                words_b |= _keywords(name)
-            sim = _jaccard(words_a, words_b)
+            sim = _cosine(l1_tfidf[la], l1_tfidf[lb])
             if sim > 0:
                 count_factor = (l1_doc_count[la] * l1_doc_count[lb]) ** 0.5
                 raw_width = sim * count_factor
-                # Collect all raw widths first (normalise in second pass)
                 edges.append({
                     "from": l1_seen[la],
                     "to": l1_seen[lb],

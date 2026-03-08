@@ -32,12 +32,14 @@
       <button id="search-results-close" title="Close">&times;</button>
     </div>
     <ul id="search-results-list"></ul>
+    <div id="search-resize-handle" title="Drag to resize"></div>
   </div>
 
-  <!-- Context menu for L2 nodes -->
+  <!-- Context menu for L2 nodes and L3 doc nodes -->
   <div id="context-menu" class="hidden">
-    <button id="ctx-rename">Rename subcategory</button>
-    <button id="ctx-merge">Merge into…</button>
+    <button id="ctx-rename" class="ctx-l2-only">Rename subcategory</button>
+    <button id="ctx-merge" class="ctx-l2-only">Merge into…</button>
+    <button id="ctx-move-doc" class="ctx-l3-only">Move to…</button>
   </div>
 
   <!-- Merge dialog -->
@@ -48,6 +50,29 @@
       <div id="merge-actions">
         <button id="merge-confirm">Merge</button>
         <button id="merge-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Move-doc dialog -->
+  <div id="move-doc-overlay" class="hidden">
+    <div id="move-doc-dialog">
+      <h3>Move "<span id="move-doc-label"></span>"</h3>
+      <div class="move-doc-row">
+        <label>Category</label>
+        <select id="move-doc-l1-select"></select>
+      </div>
+      <div class="move-doc-row">
+        <label>Subcategory</label>
+        <select id="move-doc-l2-select"></select>
+      </div>
+      <div class="move-doc-new-row">
+        <label>New subcategory</label>
+        <input id="move-doc-new-l2" type="text" placeholder="Type name to create new…" />
+      </div>
+      <div id="move-doc-actions">
+        <button id="move-doc-confirm">Move</button>
+        <button id="move-doc-cancel">Cancel</button>
       </div>
     </div>
   </div>
