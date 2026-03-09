@@ -223,6 +223,15 @@ main {
   height: 100%;
 }
 
+#rubber-band {
+  position: absolute;
+  display: none;
+  border: 1.5px dashed var(--accent);
+  background: rgba(59, 130, 246, 0.08);
+  pointer-events: none;
+  z-index: 10;
+}
+
 /* ── Context menu ── */
 #context-menu.hidden { display: none; }
 #context-menu {

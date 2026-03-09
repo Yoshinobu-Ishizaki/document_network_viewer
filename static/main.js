@@ -12,6 +12,8 @@ let nodePositionCache = {};    // { [nodeId]: {x, y} } — persists across rende
 let skipPositionSnapshot = false; // when true, renderGraph won't snapshot current positions
 let selectionState = null;    // { type: 'node', id } or { type: 'edge', edgeId, endpoints: Set }
 let dragGroupStart = null;    // { draggedId, positions: { [id]: {x,y} } } | null
+let rubberBandState = null;  // { startX, startY } in canvas DOM coords
+let panDragState = null;     // { startDOMX, startDOMY, startViewPos }
 let lastSearchMatches = null; // [{ filename, snippet }] — for re-render after graph reload
 let activeResultFile = null;  // filename of currently selected result (stable across re-renders)
 
@@ -140,7 +142,7 @@ const NETWORK_OPTIONS = {
     },
     stabilization: { iterations: 200 },
   },
-  interaction: { hover: true, tooltipDelay: 200 },
+  interaction: { hover: true, tooltipDelay: 200, dragView: false },
   edges: {
     color: { color: "#64748b", highlight: "#64748b", inherit: false },
     width: 1.5,
@@ -336,6 +338,8 @@ function styledNodes(nodes) {
             extra = hlStyle;
           }
         }
+      } else if (selectionState.type === 'multi') {
+        if (selectionState.ids.has(n.id)) extra = hlStyle;
       }
     }
     return { ...n, ...style, ...sizeOverride, ...extra };
@@ -345,6 +349,7 @@ function styledNodes(nodes) {
 // ── Highlighted node IDs (mirrors selection logic from styledNodes) ────────
 function getHighlightedNodeIds() {
   if (!selectionState || !graphData) return new Set();
+  if (selectionState.type === 'multi') return new Set(selectionState.ids);
   const allNodes = buildVisibleNodes();
   const ids = new Set();
   for (const n of allNodes) {
@@ -615,6 +620,66 @@ function renderGraph() {
       Object.assign(nodePositionCache, finalPos);
       dragGroupStart = null;
     });
+
+    // ── Rubber band selection + right-click pan ─────────────────────────────
+    const rbEl = document.createElement("div");
+    rbEl.id = "rubber-band";
+    container.appendChild(rbEl);
+
+    container.querySelector("canvas").addEventListener("contextmenu", e => e.preventDefault());
+
+    container.querySelector("canvas").addEventListener("mousedown", e => {
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const nodeAt = network.getNodeAt({ x, y });
+
+      if (e.button === 0 && !nodeAt) {
+        rubberBandState = { startX: x, startY: y };
+        Object.assign(rbEl.style, { display: "block", left: x+"px", top: y+"px", width: "0", height: "0" });
+        e.preventDefault();
+      } else if (e.button === 2 && !nodeAt) {
+        panDragState = { startDOMX: e.clientX, startDOMY: e.clientY, startViewPos: network.getViewPosition() };
+      }
+    });
+
+    window.addEventListener("mousemove", e => {
+      if (rubberBandState) {
+        const rect = container.getBoundingClientRect();
+        const curX = e.clientX - rect.left;
+        const curY = e.clientY - rect.top;
+        const x = Math.min(rubberBandState.startX, curX);
+        const y = Math.min(rubberBandState.startY, curY);
+        Object.assign(rbEl.style, {
+          left: x+"px", top: y+"px",
+          width: Math.abs(curX - rubberBandState.startX)+"px",
+          height: Math.abs(curY - rubberBandState.startY)+"px",
+        });
+      }
+      if (panDragState) {
+        const dx = e.clientX - panDragState.startDOMX;
+        const dy = e.clientY - panDragState.startDOMY;
+        const scale = network.getScale();
+        const { x: vx, y: vy } = panDragState.startViewPos;
+        network.moveTo({ position: { x: vx - dx/scale, y: vy - dy/scale }, scale, animation: false });
+      }
+    });
+
+    window.addEventListener("mouseup", e => {
+      if (rubberBandState && e.button === 0) {
+        const rect = container.getBoundingClientRect();
+        const curX = e.clientX - rect.left;
+        const curY = e.clientY - rect.top;
+        rbEl.style.display = "none";
+        const ids = getNodesInRect(rubberBandState.startX, rubberBandState.startY, curX, curY);
+        rubberBandState = null;
+        selectionState = ids.size > 0 ? { type: 'multi', ids } : null;
+        applySelectionHighlight();
+      }
+      if (panDragState && e.button === 2) {
+        panDragState = null;
+      }
+    });
   }
 
   let physicsOffTimer;
@@ -699,6 +764,22 @@ function applySelectionHighlight() {
   if (!nodesDataRef) return;
   const allNodes = buildVisibleNodes();
   nodesDataRef.update(styledNodes(allNodes).map(n => ({ id: n.id, color: n.color, font: n.font })));
+}
+
+function getNodesInRect(x1, y1, x2, y2) {
+  const minX = Math.min(x1, x2), maxX = Math.max(x1, x2);
+  const minY = Math.min(y1, y2), maxY = Math.max(y1, y2);
+  if (maxX - minX < 4 && maxY - minY < 4) return new Set();
+  const ids = nodesDataRef.getIds();
+  const positions = network.getPositions(ids);
+  const result = new Set();
+  for (const [id, canvasPos] of Object.entries(positions)) {
+    const domPos = network.canvasToDOM(canvasPos);
+    if (domPos.x >= minX && domPos.x <= maxX && domPos.y >= minY && domPos.y <= maxY) {
+      result.add(id);
+    }
+  }
+  return result;
 }
 
 function onNetworkClick(params) {
