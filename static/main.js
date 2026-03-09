@@ -11,6 +11,7 @@ let edgesDataRef = null;
 let nodePositionCache = {};    // { [nodeId]: {x, y} } — persists across renderGraph calls
 let skipPositionSnapshot = false; // when true, renderGraph won't snapshot current positions
 let selectionState = null;    // { type: 'node', id } or { type: 'edge', edgeId, endpoints: Set }
+let dragGroupStart = null;    // { draggedId, positions: { [id]: {x,y} } } | null
 
 // Independent expand/collapse state (replaces drill-down navigation)
 let expandedL1s = new Set();   // L1 base labels
@@ -339,6 +340,34 @@ function styledNodes(nodes) {
   });
 }
 
+// ── Highlighted node IDs (mirrors selection logic from styledNodes) ────────
+function getHighlightedNodeIds() {
+  if (!selectionState || !graphData) return new Set();
+  const allNodes = buildVisibleNodes();
+  const ids = new Set();
+  for (const n of allNodes) {
+    if (selectionState.type === 'node') {
+      const sel = graphData.nodes.find(nd => nd.id === selectionState.id);
+      if (sel) {
+        const selBase = sel._baseLabel || sel.label;
+        if (n.id === sel.id ||
+            (sel.level === 1 && n.level === 2 && n.l1 === selBase) ||
+            (sel.level === 2 && n.level === 3 && n.l1 === sel.l1 && n.l2 === selBase)) {
+          ids.add(n.id);
+        }
+      }
+    } else if (selectionState.type === 'edge') {
+      if (selectionState.endpoints.has(n.id) ||
+          (n.level === 3 && (selectionState.endpoints.has(`l2:${n.l1}:${n.l2}`) ||
+                             selectionState.endpoints.has(`l1:${n.l1}`))) ||
+          (n.level === 2 && selectionState.endpoints.has(`l1:${n.l1}`))) {
+        ids.add(n.id);
+      }
+    }
+  }
+  return ids;
+}
+
 // ── MDS-based initial node positioning ────────────────────────────────────
 
 function cosineSim(a, b) {
@@ -550,6 +579,40 @@ function renderGraph() {
     network.on("doubleClick", onNodeDoubleClick);
     network.on("click", onNetworkClick);
     network.on("oncontext", onNodeRightClick);
+
+    network.on("dragStart", (params) => {
+      if (!params.nodes.length || !selectionState) return;
+      const draggedId = params.nodes[0];
+      const highlighted = getHighlightedNodeIds();
+      if (!highlighted.has(draggedId)) return;
+      dragGroupStart = {
+        draggedId,
+        positions: network.getPositions([...highlighted]),
+      };
+    });
+
+    network.on("dragging", (params) => {
+      if (!dragGroupStart || !params.nodes.length) return;
+      const draggedId = params.nodes[0];
+      if (draggedId !== dragGroupStart.draggedId) return;
+      const cur = network.getPositions([draggedId])[draggedId];
+      const start = dragGroupStart.positions[draggedId];
+      if (!cur || !start) return;
+      const dx = cur.x - start.x;
+      const dy = cur.y - start.y;
+      for (const [id, pos] of Object.entries(dragGroupStart.positions)) {
+        if (id === draggedId) continue;
+        network.moveNode(id, pos.x + dx, pos.y + dy);
+      }
+    });
+
+    network.on("dragEnd", (params) => {
+      if (!dragGroupStart || !params.nodes.length) return;
+      if (params.nodes[0] !== dragGroupStart.draggedId) return;
+      const finalPos = network.getPositions(Object.keys(dragGroupStart.positions));
+      Object.assign(nodePositionCache, finalPos);
+      dragGroupStart = null;
+    });
   }
 
   let physicsOffTimer;
