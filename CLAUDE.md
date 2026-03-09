@@ -147,3 +147,8 @@ When use asks to "tackle todo", "handle todo", or similar meaning,
 
 When asked to write README.md or similar documents for user, use Japanese to write them.
 
+### Data specific matter
+
+If there is @DATA.md, please read it for further category/subcategory handling or how to handle documents in `data/` folder.
+If there is a conflicting explanation between this instruction and @DATA.md, please prioritize description in @DATA.md.
+
