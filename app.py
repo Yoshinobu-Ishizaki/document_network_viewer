@@ -28,7 +28,6 @@ from pydantic import BaseModel
 
 DATA_DIR = Path("data")
 LOCAL_DIR = Path(".local")
-CONFIG_FILE = Path("config.yaml")
 LOCAL_DIR.mkdir(exist_ok=True)
 INDEX_FILE = LOCAL_DIR / "index.json"
 UI_STATE_FILE = LOCAL_DIR / "ui_state.json"
@@ -68,13 +67,6 @@ def get_graph() -> JSONResponse:
     with open(INDEX_FILE, encoding="utf-8") as f:
         data = json.load(f)
     data["edges"] = deduplicate_edges(data["edges"])
-    filter_behavior = "gray"
-    if CONFIG_FILE.exists():
-        import yaml
-        with open(CONFIG_FILE, encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
-        filter_behavior = cfg.get("filter_behavior", "gray")
-    data["filter_behavior"] = filter_behavior
     return JSONResponse(data)
 
 

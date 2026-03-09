@@ -17,7 +17,7 @@ let panDragState = null;     // { startDOMX, startDOMY, startViewPos }
 let lastSearchMatches = null; // [{ filename, snippet }] — for re-render after graph reload
 let activeResultFile = null;  // filename of currently selected result (stable across re-renders)
 let activeFilter = null;         // string keyword | null — NOT persisted
-let filterBehavior = "gray";     // "gray" | "hide" — read from /api/graph
+let filterBehavior = localStorage.getItem("filterBehavior") || "gray"; // "gray" | "hide" — persisted in localStorage
 let filterDebounceTimer = null;
 let currentFilterMatches = null; // { matchedDocs, matchedL2s, matchedL1s } | null
 
@@ -180,7 +180,6 @@ async function init() {
   document.getElementById("theme-btn").textContent = THEME_LABELS[colorMode];
 
   graphData = await graphRes.json();
-  filterBehavior = graphData.filter_behavior || "gray";
   applyDocCounts(graphData);
 
   // Load saved UI state (positions + expand state) from server
@@ -801,7 +800,6 @@ async function reloadGraph() {
   const res = await fetch("/api/graph");
   if (!res.ok) return;
   graphData = await res.json();
-  filterBehavior = graphData.filter_behavior || "gray";
   if (activeFilter) {
     currentFilterMatches = computeFilterMatches(activeFilter, new Set());
   }
@@ -1313,6 +1311,23 @@ async function runSearch() {
 // ── Keyword filter ──────────────────────────────────────────────────────────
 const filterInputEl = document.getElementById("filter-input");
 const filterClearBtn = document.getElementById("filter-clear");
+const filterModeBtnEl = document.getElementById("filter-mode-btn");
+
+// Sync button to persisted value
+if (filterBehavior === "hide") {
+  filterModeBtnEl.textContent = "\u2297 Hide";
+  filterModeBtnEl.classList.add("mode-hide");
+}
+
+filterModeBtnEl.addEventListener("click", () => {
+  filterBehavior = filterBehavior === "gray" ? "hide" : "gray";
+  filterModeBtnEl.textContent = filterBehavior === "gray" ? "\u25d1 Dim" : "\u2297 Hide";
+  filterModeBtnEl.classList.toggle("mode-hide", filterBehavior === "hide");
+  localStorage.setItem("filterBehavior", filterBehavior);
+  if (activeFilter) {
+    renderGraph();
+  }
+});
 
 filterInputEl.addEventListener("input", () => {
   const val = filterInputEl.value.trim();

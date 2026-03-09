@@ -149,6 +149,21 @@ header h1 {
 }
 #filter-clear:hover { border-color: var(--accent); color: var(--accent); }
 #filter-clear.hidden { display: none; }
+#filter-mode-btn {
+  padding: 4px 8px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+#filter-mode-btn:hover { border-color: var(--accent); color: var(--accent); }
+#filter-mode-btn.mode-hide {
+  border-color: #f59e0b;
+  color: #f59e0b;
+}
 #attr-filter-btn {
   padding: 5px 9px;
   background: none;
