@@ -9,6 +9,7 @@ let searchHighlight = null;    // { l1Id, l2Id, docId } | null
 let nodesDataRef = null;
 let edgesDataRef = null;
 let nodePositionCache = {};    // { [nodeId]: {x, y} } — persists across renderGraph calls
+let skipPositionSnapshot = false; // when true, renderGraph won't snapshot current positions
 
 // Independent expand/collapse state (replaces drill-down navigation)
 let expandedL1s = new Set();   // L1 base labels
@@ -340,9 +341,14 @@ function deflate(B, v, lambda, n) {
   return B.map((row, i) => row.map((val, j) => val - lambda * v[i] * v[j]));
 }
 
-function computeInitialPositions(nodes, edges) {
+function computeInitialPositions(nodes, edges, spread = 350) {
   const n = nodes.length;
-  if (n <= 2) return {};
+  if (n === 0) return {};
+  if (n === 1) return { [nodes[0].id]: { x: 0, y: 0 } };
+  if (n === 2) return {
+    [nodes[0].id]: { x: -spread * 0.23, y: 0 },
+    [nodes[1].id]: { x:  spread * 0.23, y: 0 },
+  };
 
   // Build pairwise similarity from node.keywords
   const sim = Array.from({ length: n }, () => new Array(n).fill(0));
@@ -380,15 +386,14 @@ function computeInitialPositions(nodes, edges) {
   const B2 = deflate(B, v1, l1, n);
   const [v2, l2] = powerIterate(B2, n);
 
-  const SPREAD = 350;
   const scale1 = Math.sqrt(Math.max(l1, 0)) || 1;
   const scale2 = Math.sqrt(Math.max(l2, 0)) || 1;
 
   const positions = {};
   for (let i = 0; i < n; i++) {
     positions[nodes[i].id] = {
-      x: v1[i] * scale1 * SPREAD,
-      y: v2[i] * scale2 * SPREAD,
+      x: v1[i] * scale1 * spread,
+      y: v2[i] * scale2 * spread,
     };
   }
   return positions;
@@ -398,8 +403,8 @@ function computeInitialPositions(nodes, edges) {
 // - L1 nodes: MDS among themselves
 // - L2 nodes: MDS within each L1 group, offset relative to L1 parent
 // - Doc nodes: MDS within each L2 group, offset relative to L2 parent
-function computeHierarchicalPositions(allNodes, allEdges) {
-  const positions = {};
+function computeHierarchicalPositions(allNodes, allEdges, existingPositions = {}) {
+  const positions = { ...existingPositions };
 
   // L1 nodes
   const l1Nodes = allNodes.filter(n => n.level === 1);
@@ -448,9 +453,9 @@ function computeHierarchicalPositions(allNodes, allEdges) {
     const l2Center = positions[l2Id] || { x: 0, y: 0 };
     const groupEdges = allEdges.filter(e =>
       group.some(n => n.id === e.from) && group.some(n => n.id === e.to));
-    const groupPos = computeInitialPositions(group, groupEdges);
+    const groupPos = computeInitialPositions(group, groupEdges, 100);
 
-    const OFFSET = 250;
+    const OFFSET = 130;
     const l2Keys = Object.keys(docsByL2);
     const angle = (l2Keys.indexOf(l2Id) / Math.max(l2Keys.length, 1)) * 2 * Math.PI;
     const ox = l2Center.x + Math.cos(angle) * OFFSET;
@@ -468,16 +473,33 @@ function computeHierarchicalPositions(allNodes, allEdges) {
 
 // ── Render ─────────────────────────────────────────────────────────────────
 function renderGraph() {
-  // Snapshot current positions before wiping
-  if (network) {
+  // Snapshot current positions before wiping (skip when rearranging)
+  if (network && !skipPositionSnapshot) {
     Object.assign(nodePositionCache, network.getPositions());
   }
+  skipPositionSnapshot = false;
 
   const allNodes = buildVisibleNodes();
   const nodeIds = allNodes.map(n => n.id);
   const edges = edgesForNodes(nodeIds);
 
-  const nodesDataset = new vis.DataSet(styledNodes(allNodes));
+  // Compute positions for nodes not yet in cache (before creating DataSet)
+  const newNodes = allNodes.filter(n => !nodePositionCache[n.id]);
+  if (newNodes.length > 0) {
+    const newEdges = edgesForNodes(newNodes.map(n => n.id));
+    const initPos = computeHierarchicalPositions(newNodes, newEdges, nodePositionCache);
+    for (const [id, pos] of Object.entries(initPos)) {
+      nodePositionCache[id] = pos;
+    }
+  }
+
+  // Embed positions and pin directly in node data so vis.js uses them from the start
+  const nodesWithPos = styledNodes(allNodes).map(n => {
+    const pos = nodePositionCache[n.id];
+    return pos ? { ...n, x: pos.x, y: pos.y, fixed: { x: true, y: true } } : n;
+  });
+
+  const nodesDataset = new vis.DataSet(nodesWithPos);
   const edgesDataset = new vis.DataSet(edges);
   nodesDataRef = nodesDataset;
   edgesDataRef = edgesDataset;
@@ -493,29 +515,6 @@ function renderGraph() {
     network.on("doubleClick", onNodeDoubleClick);
     network.on("click", onNodeClick);
     network.on("oncontext", onNodeRightClick);
-  }
-
-  // Compute initial positions via MDS for nodes not yet in cache
-  const newNodes = allNodes.filter(n => !nodePositionCache[n.id]);
-  if (newNodes.length > 0) {
-    const newEdges = edgesForNodes(newNodes.map(n => n.id));
-    const initPos = computeHierarchicalPositions(newNodes, newEdges);
-    for (const [id, pos] of Object.entries(initPos)) {
-      nodePositionCache[id] = pos;
-    }
-  }
-
-  // Restore/apply positions and pin during stabilization
-  const pinnedUpdates = [];
-  for (const n of allNodes) {
-    const saved = nodePositionCache[n.id];
-    if (saved) {
-      network.moveNode(n.id, saved.x, saved.y);
-      pinnedUpdates.push({ id: n.id, fixed: { x: true, y: true } });
-    }
-  }
-  if (pinnedUpdates.length) {
-    nodesDataset.update(pinnedUpdates);
   }
 
   let physicsOffTimer;
@@ -584,6 +583,11 @@ document.getElementById("expand-all-btn").addEventListener("click", () => {
 document.getElementById("collapse-all-btn").addEventListener("click", () => {
   expandedL1s.clear();
   expandedL2s.clear();
+  renderGraph();
+});
+document.getElementById("rearrange-btn").addEventListener("click", () => {
+  nodePositionCache = {};
+  skipPositionSnapshot = true;
   renderGraph();
 });
 
