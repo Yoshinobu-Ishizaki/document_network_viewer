@@ -15,6 +15,7 @@ let selectionState = null;    // { type: 'node', id } or { type: 'edge', edgeId,
 let dragGroupStart = null;    // { draggedId, positions: { [id]: {x,y} } } | null
 let rubberBandState = null;  // { startX, startY } in canvas DOM coords
 let panDragState = null;     // { startDOMX, startDOMY, startViewPos }
+let edgeDragState = null;    // { edgeId, nodeIds, startPositions, startMouseCanvas, startDOMX, startDOMY, moved }
 let lastSearchMatches = null; // [{ filename, snippet }] — for re-render after graph reload
 let activeResultFile = null;  // filename of currently selected result (stable across re-renders)
 let activeFilter = null;         // string keyword | null — NOT persisted
@@ -870,8 +871,18 @@ function renderGraph() {
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
       const nodeAt = network.getNodeAt({ x, y });
+      const edgeAt = network.getEdgeAt({ x, y });
 
-      if (e.button === 0 && !nodeAt) {
+      if (e.button === 0 && !nodeAt && edgeAt) {
+        const edgeData = edgesDataRef?.get(edgeAt);
+        if (edgeData) {
+          const nodeIds = [edgeData.from, edgeData.to];
+          const startPositions = network.getPositions(nodeIds);
+          const startMouseCanvas = network.DOMtoCanvas({ x, y });
+          edgeDragState = { edgeId: edgeAt, nodeIds, startPositions, startMouseCanvas, startDOMX: x, startDOMY: y, moved: false };
+          e.preventDefault();
+        }
+      } else if (e.button === 0 && !nodeAt && !edgeAt) {
         rubberBandState = { startX: x, startY: y };
         Object.assign(rbEl.style, { display: "block", left: x+"px", top: y+"px", width: "0", height: "0" });
         e.preventDefault();
@@ -900,6 +911,24 @@ function renderGraph() {
         const { x: vx, y: vy } = panDragState.startViewPos;
         network.moveTo({ position: { x: vx - dx/scale, y: vy - dy/scale }, scale, animation: false });
       }
+      if (edgeDragState) {
+        const rect = container.getBoundingClientRect();
+        const curX = e.clientX - rect.left;
+        const curY = e.clientY - rect.top;
+        if (!edgeDragState.moved &&
+            (Math.abs(curX - edgeDragState.startDOMX) > 3 || Math.abs(curY - edgeDragState.startDOMY) > 3)) {
+          edgeDragState.moved = true;
+        }
+        if (edgeDragState.moved) {
+          const curCanvas = network.DOMtoCanvas({ x: curX, y: curY });
+          const dx = curCanvas.x - edgeDragState.startMouseCanvas.x;
+          const dy = curCanvas.y - edgeDragState.startMouseCanvas.y;
+          for (const id of edgeDragState.nodeIds) {
+            const start = edgeDragState.startPositions[id];
+            if (start) network.moveNode(id, start.x + dx, start.y + dy);
+          }
+        }
+      }
     });
 
     window.addEventListener("mouseup", e => {
@@ -915,6 +944,15 @@ function renderGraph() {
       }
       if (panDragState && e.button === 2) {
         panDragState = null;
+      }
+      if (edgeDragState && e.button === 0) {
+        if (edgeDragState.moved) {
+          const finalPos = network.getPositions(edgeDragState.nodeIds);
+          Object.assign(nodePositionCache, finalPos);
+          selectionState = { type: 'edge', edgeId: edgeDragState.edgeId, endpoints: new Set(edgeDragState.nodeIds) };
+          applySelectionHighlight();
+        }
+        edgeDragState = null;
       }
     });
   }
