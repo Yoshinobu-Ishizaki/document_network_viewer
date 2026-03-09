@@ -10,6 +10,7 @@ let nodesDataRef = null;
 let edgesDataRef = null;
 let nodePositionCache = {};    // { [nodeId]: {x, y} } — persists across renderGraph calls
 let skipPositionSnapshot = false; // when true, renderGraph won't snapshot current positions
+let selectionState = null;    // { type: 'node', id } or { type: 'edge', edgeId, endpoints: Set }
 
 // Independent expand/collapse state (replaces drill-down navigation)
 let expandedL1s = new Set();   // L1 base labels
@@ -300,6 +301,40 @@ function styledNodes(nodes) {
           font: { color: "#1e2229" },
         };
     }
+    // Selection highlight (searchHighlight takes precedence)
+    if (!extra.color && selectionState) {
+      const hl = appColors.selectionColor;
+      const hlStyle = {
+        color: { background: hl, border: hl, highlight: { background: hl, border: hl } },
+        font: { color: "#fff" },
+      };
+      if (selectionState.type === 'node') {
+        const sel = graphData.nodes.find(nd => nd.id === selectionState.id);
+        if (sel) {
+          const selBase = sel._baseLabel || sel.label;
+          if (n.id === sel.id) {
+            extra = hlStyle;
+          } else if (sel.level === 1 && n.level === 2 && n.l1 === selBase) {
+            extra = hlStyle;
+          } else if (sel.level === 2 && n.level === 3 && n.l1 === sel.l1 && n.l2 === selBase) {
+            extra = hlStyle;
+          }
+        }
+      } else if (selectionState.type === 'edge') {
+        if (selectionState.endpoints.has(n.id)) {
+          extra = hlStyle;
+        } else if (n.level === 3) {
+          if (selectionState.endpoints.has(`l2:${n.l1}:${n.l2}`) ||
+              selectionState.endpoints.has(`l1:${n.l1}`)) {
+            extra = hlStyle;
+          }
+        } else if (n.level === 2) {
+          if (selectionState.endpoints.has(`l1:${n.l1}`)) {
+            extra = hlStyle;
+          }
+        }
+      }
+    }
     return { ...n, ...style, ...sizeOverride, ...extra };
   });
 }
@@ -513,7 +548,7 @@ function renderGraph() {
   } else {
     network = new vis.Network(container, dataset, NETWORK_OPTIONS);
     network.on("doubleClick", onNodeDoubleClick);
-    network.on("click", onNodeClick);
+    network.on("click", onNetworkClick);
     network.on("oncontext", onNodeRightClick);
   }
 
@@ -542,6 +577,7 @@ async function reloadGraph() {
   graphData = await res.json();
   applyDocCounts(graphData);
   searchHighlight = null;
+  selectionState = null;
   nodePositionCache = {};
   renderGraph();
 }
@@ -591,15 +627,42 @@ document.getElementById("rearrange-btn").addEventListener("click", () => {
   renderGraph();
 });
 
-function onNodeClick(params) {
-  if (!params.nodes.length) return;
-  const nodeId = params.nodes[0];
-  const node = graphData.nodes.find(n => n.id === nodeId);
-  if (!node) return;
+function applySelectionHighlight() {
+  if (!nodesDataRef) return;
+  const allNodes = buildVisibleNodes();
+  nodesDataRef.update(styledNodes(allNodes).map(n => ({ id: n.id, color: n.color, font: n.font })));
+}
 
-  if (node.level === 3 && node.file) {
-    openDoc(node.file, node.label, node);
+function onNetworkClick(params) {
+  if (params.nodes.length) {
+    const nodeId = params.nodes[0];
+    const node = graphData.nodes.find(n => n.id === nodeId);
+    if (!node) return;
+    if (node.level === 3 && node.file) {
+      openDoc(node.file, node.label, node);
+      selectionState = null;
+    } else {
+      // Toggle selection on L1/L2
+      if (selectionState?.type === 'node' && selectionState.id === nodeId) {
+        selectionState = null;
+      } else {
+        selectionState = { type: 'node', id: nodeId };
+      }
+    }
+  } else if (params.edges.length) {
+    const edgeId = params.edges[0];
+    const edgeData = edgesDataRef?.get(edgeId);
+    if (edgeData) {
+      if (selectionState?.type === 'edge' && selectionState.edgeId === edgeId) {
+        selectionState = null;
+      } else {
+        selectionState = { type: 'edge', edgeId, endpoints: new Set([edgeData.from, edgeData.to]) };
+      }
+    }
+  } else {
+    selectionState = null;
   }
+  applySelectionHighlight();
 }
 
 // ── Doc panel ──────────────────────────────────────────────────────────────

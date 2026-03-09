@@ -129,7 +129,7 @@ uv run preprocess.py --rebuild # full rebuild from cache
 uv run app.py
 # App available at http://localhost:8000
 ```
-## Development cycle
+### Development cycle
 
 When use asks to "tackle todo", "handle todo", or similar meaning, 
 
@@ -143,4 +143,7 @@ When use asks to "tackle todo", "handle todo", or similar meaning,
 - Finally ask user to commit changes.
 - Then, ask user to move to next entry if there is such one left.
 
- 
+### Documentation
+
+When asked to write README.md or similar documents for user, use Japanese to write them.
+
