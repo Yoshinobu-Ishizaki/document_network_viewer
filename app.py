@@ -248,15 +248,18 @@ def merge_subcategory(req: MergeRequest) -> JSONResponse:
     updated_edges = []
     for edge in data["edges"]:
         if edge["from"] == source_id:
-            # doc edges: point to target instead
             edge["from"] = target_id
-            # deduplicate by checking if target→doc edge already exists
-            updated_edges.append(edge)
         elif edge["to"] == source_id:
-            # edge from L1 to source L2 — drop it
-            pass
-        else:
-            updated_edges.append(edge)
+            if edge.get("dashes"):
+                # Containment edge (L1 → source L2) — drop it
+                continue
+            else:
+                # Semantic edge from another L2 — rewire to target
+                edge["to"] = target_id
+        # Skip self-loops (e.g. semantic edge between source and target)
+        if edge["from"] == edge["to"]:
+            continue
+        updated_edges.append(edge)
     data["edges"] = updated_edges
 
     # Remove the source L2 node
