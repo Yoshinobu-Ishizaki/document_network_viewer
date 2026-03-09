@@ -16,6 +16,10 @@ let rubberBandState = null;  // { startX, startY } in canvas DOM coords
 let panDragState = null;     // { startDOMX, startDOMY, startViewPos }
 let lastSearchMatches = null; // [{ filename, snippet }] — for re-render after graph reload
 let activeResultFile = null;  // filename of currently selected result (stable across re-renders)
+let activeFilter = null;         // string keyword | null — NOT persisted
+let filterBehavior = "gray";     // "gray" | "hide" — read from /api/graph
+let filterDebounceTimer = null;
+let currentFilterMatches = null; // { matchedDocs, matchedL2s, matchedL1s } | null
 
 // Independent expand/collapse state (replaces drill-down navigation)
 let expandedL1s = new Set();   // L1 base labels
@@ -82,6 +86,12 @@ function buildLevelStyles() {
 }
 
 let LEVEL_STYLES = buildLevelStyles();
+
+function buildDimmedColors() {
+  return resolveEffectiveTheme() === "dark"
+    ? { l1: "#1e3050", l2: "#2a1f4a", doc: "#1a2233", font: "#475569" }
+    : { l1: "#dbeafe", l2: "#ede9fe", doc: "#e2e8f0", font: "#94a3b8" };
+}
 
 // Update colors in-place without resetting node positions or physics
 function refreshDisplayedColors() {
@@ -170,6 +180,7 @@ async function init() {
   document.getElementById("theme-btn").textContent = THEME_LABELS[colorMode];
 
   graphData = await graphRes.json();
+  filterBehavior = graphData.filter_behavior || "gray";
   applyDocCounts(graphData);
 
   // Load saved UI state (positions + expand state) from server
@@ -236,7 +247,76 @@ function buildVisibleNodes() {
       visible.push(...docNodes);
     }
   }
+  if (activeFilter && filterBehavior === "hide" && currentFilterMatches) {
+    const { matchedDocs, matchedL2s, matchedL1s } = currentFilterMatches;
+    return visible.filter(n => {
+      if (n.level === 1) return matchedL1s.has(n.id);
+      if (n.level === 2) return matchedL2s.has(n.id);
+      return matchedDocs.has(n.id);
+    });
+  }
   return visible;
+}
+
+// ── Filter helpers ─────────────────────────────────────────────────────────
+function computeFilterMatches(keyword, apiMatchSet = new Set()) {
+  if (!keyword || !graphData) return null;
+  const lc = keyword.toLowerCase();
+  const matchedDocs = new Set();
+  const matchedL2s = new Set();
+  const matchedL1s = new Set();
+  for (const n of graphData.nodes) {
+    if (n.level === 3) {
+      const labelMatch = (n.label || "").toLowerCase().includes(lc);
+      const fileMatch = apiMatchSet.has(n.file);
+      if (labelMatch || fileMatch) {
+        matchedDocs.add(n.id);
+        matchedL2s.add(`l2:${n.l1}:${n.l2}`);
+        matchedL1s.add(`l1:${n.l1}`);
+      }
+    }
+  }
+  return { matchedDocs, matchedL2s, matchedL1s };
+}
+
+function applyFilter(keyword) {
+  activeFilter = keyword || null;
+  if (!activeFilter) {
+    currentFilterMatches = null;
+    filterInputEl.classList.remove("filter-active");
+    filterClearBtn.classList.add("hidden");
+  } else {
+    filterInputEl.classList.add("filter-active");
+    filterClearBtn.classList.remove("hidden");
+    currentFilterMatches = computeFilterMatches(activeFilter, new Set());
+  }
+  if (filterBehavior === "hide") {
+    renderGraph();
+  } else if (nodesDataRef) {
+    nodesDataRef.update(styledNodes(buildVisibleNodes()).map(n => ({
+      id: n.id, color: n.color, font: n.font,
+    })));
+  }
+}
+
+async function applyFilterWithApiResults(keyword) {
+  let apiMatchSet = new Set();
+  try {
+    const res = await fetch(`/api/search?q=${encodeURIComponent(keyword)}`);
+    if (res.ok) {
+      const data = await res.json();
+      apiMatchSet = new Set(data.matches.map(m => m.filename));
+    }
+  } catch (_) {}
+  if (activeFilter !== keyword) return; // stale
+  currentFilterMatches = computeFilterMatches(keyword, apiMatchSet);
+  if (filterBehavior === "hide") {
+    renderGraph();
+  } else if (nodesDataRef) {
+    nodesDataRef.update(styledNodes(buildVisibleNodes()).map(n => ({
+      id: n.id, color: n.color, font: n.font,
+    })));
+  }
 }
 
 // ── Edges ──────────────────────────────────────────────────────────────────
@@ -297,6 +377,22 @@ function styledNodes(nodes) {
       const ratio = n.ndocs / maxNdocs[2];
       sizeOverride = { size: Math.round(14 + ratio * 16) };
     }
+    let dimmedExtra = {};
+    if (activeFilter && filterBehavior === "gray" && currentFilterMatches) {
+      const { matchedDocs, matchedL2s, matchedL1s } = currentFilterMatches;
+      const matches =
+        (n.level === 1 && matchedL1s.has(n.id)) ||
+        (n.level === 2 && matchedL2s.has(n.id)) ||
+        (n.level === 3 && matchedDocs.has(n.id));
+      if (!matches) {
+        const dim = buildDimmedColors();
+        const bg = n.level === 1 ? dim.l1 : n.level === 2 ? dim.l2 : dim.doc;
+        dimmedExtra = {
+          color: { background: bg, border: bg, highlight: { background: bg, border: bg } },
+          font: { color: dim.font },
+        };
+      }
+    }
     let extra = {};
     if (searchHighlight) {
       const hl = appColors.searchHighlightColor;
@@ -342,7 +438,7 @@ function styledNodes(nodes) {
         if (selectionState.ids.has(n.id)) extra = hlStyle;
       }
     }
-    return { ...n, ...style, ...sizeOverride, ...extra };
+    return { ...n, ...style, ...sizeOverride, ...dimmedExtra, ...extra };
   });
 }
 
@@ -705,6 +801,10 @@ async function reloadGraph() {
   const res = await fetch("/api/graph");
   if (!res.ok) return;
   graphData = await res.json();
+  filterBehavior = graphData.filter_behavior || "gray";
+  if (activeFilter) {
+    currentFilterMatches = computeFilterMatches(activeFilter, new Set());
+  }
   applyDocCounts(graphData);
   searchHighlight = null;
   selectionState = null;
@@ -1209,6 +1309,28 @@ async function runSearch() {
   activeResultFile = null;
   renderSearchResults(data.matches);
 }
+
+// ── Keyword filter ──────────────────────────────────────────────────────────
+const filterInputEl = document.getElementById("filter-input");
+const filterClearBtn = document.getElementById("filter-clear");
+
+filterInputEl.addEventListener("input", () => {
+  const val = filterInputEl.value.trim();
+  applyFilter(val);
+  clearTimeout(filterDebounceTimer);
+  if (val) {
+    filterDebounceTimer = setTimeout(() => applyFilterWithApiResults(val), 300);
+  }
+});
+
+filterInputEl.addEventListener("keydown", e => {
+  if (e.key === "Escape") { filterInputEl.value = ""; applyFilter(""); }
+});
+
+filterClearBtn.addEventListener("click", () => {
+  filterInputEl.value = "";
+  applyFilter("");
+});
 
 // ── Theme toggle ────────────────────────────────────────────────────────────
 document.getElementById("theme-btn").addEventListener("click", async () => {

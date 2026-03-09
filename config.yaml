@@ -1,3 +1,5 @@
+filter_behavior: hide   # "gray" (default) or "hide"
+
 categories:
   - Jigs & Tools
   - Manufacturing

@@ -110,6 +110,57 @@ header h1 {
 }
 #search-btn:hover { border-color: var(--accent); color: var(--accent); }
 
+/* ── Filter bar ── */
+#filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+#filter-icon {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  user-select: none;
+  flex-shrink: 0;
+}
+#filter-input {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 0.8rem;
+  width: 160px;
+  outline: none;
+  background: var(--surface);
+  color: var(--text);
+}
+#filter-input:focus { border-color: var(--accent); }
+#filter-input.filter-active {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245,158,11,0.2);
+}
+#filter-clear {
+  padding: 4px 7px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+#filter-clear:hover { border-color: var(--accent); color: var(--accent); }
+#filter-clear.hidden { display: none; }
+#attr-filter-btn {
+  padding: 5px 9px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 0.78rem;
+  cursor: not-allowed;
+  color: var(--text-muted);
+  opacity: 0.5;
+  white-space: nowrap;
+}
+
 /* ── Search results panel ── */
 #search-results {
   position: fixed;
