@@ -12,6 +12,8 @@ let nodePositionCache = {};    // { [nodeId]: {x, y} } — persists across rende
 let skipPositionSnapshot = false; // when true, renderGraph won't snapshot current positions
 let selectionState = null;    // { type: 'node', id } or { type: 'edge', edgeId, endpoints: Set }
 let dragGroupStart = null;    // { draggedId, positions: { [id]: {x,y} } } | null
+let lastSearchMatches = null; // [{ filename, snippet }] — for re-render after graph reload
+let activeResultFile = null;  // filename of currently selected result (stable across re-renders)
 
 // Independent expand/collapse state (replaces drill-down navigation)
 let expandedL1s = new Set();   // L1 base labels
@@ -643,6 +645,9 @@ async function reloadGraph() {
   selectionState = null;
   nodePositionCache = {};
   renderGraph();
+  if (lastSearchMatches && !searchResults.classList.contains("hidden")) {
+    renderSearchResults(lastSearchMatches);
+  }
 }
 
 // ── Interaction ─────────────────────────────────────────────────────────────
@@ -1037,8 +1042,55 @@ function closeSearchResults() {
   searchResults.classList.add("hidden");
   searchInput.value = "";
   activeResultLi = null;
+  activeResultFile = null;
+  lastSearchMatches = null;
   searchHighlight = null;
   if (nodesDataRef) refreshDisplayedColors();
+}
+
+function renderSearchResults(matches) {
+  searchResultsList.innerHTML = "";
+  activeResultLi = null;
+
+  for (const match of matches) {
+    const docNode = graphData?.nodes.find(n => n.level === 3 && n.file === match.filename);
+
+    const li = document.createElement("li");
+    const catText = docNode ? `${docNode.l1} › ${docNode.l2}` : "";
+    li.innerHTML = `
+      <div class="result-name">${docNode ? docNode.label : match.filename}</div>
+      ${catText ? `<div class="result-category">${catText}</div>` : ""}
+      <div class="result-snippet">${match.snippet || ""}</div>
+    `;
+
+    if (match.filename === activeResultFile) {
+      li.classList.add("result-selected");
+      activeResultLi = li;
+    }
+
+    li.addEventListener("click", () => {
+      if (activeResultLi) activeResultLi.classList.remove("result-selected");
+      li.classList.add("result-selected");
+      activeResultLi = li;
+      activeResultFile = match.filename;
+
+      const label = docNode ? docNode.label : match.filename;
+      openDoc(match.filename, label, docNode || null);
+
+      if (docNode) {
+        searchHighlight = {
+          l1Id: `l1:${docNode.l1}`,
+          l2Id: `l2:${docNode.l1}:${docNode.l2}`,
+          docId: docNode.id,
+        };
+        expandedL1s.add(docNode.l1);
+        expandedL2s.add(`l2:${docNode.l1}:${docNode.l2}`);
+        renderGraph();
+      }
+    });
+
+    searchResultsList.appendChild(li);
+  }
 }
 
 document.getElementById("search-results-close").addEventListener("click", closeSearchResults);
@@ -1066,44 +1118,15 @@ async function runSearch() {
   const data = await res.json();
 
   if (!data.matches.length) {
+    lastSearchMatches = null;
     searchResultsLabel.textContent = `No results for "${q}"`;
     return;
   }
 
   searchResultsLabel.textContent = `${data.matches.length} result(s) for "${q}"`;
-
-  for (const match of data.matches) {
-    const docNode = graphData?.nodes.find(n => n.level === 3 && n.file === match.filename);
-
-    const li = document.createElement("li");
-    li.innerHTML = `
-      <div class="result-name">${docNode ? docNode.label : match.filename}</div>
-      <div class="result-snippet">${match.snippet || ""}</div>
-    `;
-
-    li.addEventListener("click", () => {
-      if (activeResultLi) activeResultLi.classList.remove("result-selected");
-      li.classList.add("result-selected");
-      activeResultLi = li;
-
-      const label = docNode ? docNode.label : match.filename;
-      openDoc(match.filename, label, docNode || null);
-
-      if (docNode) {
-        searchHighlight = {
-          l1Id: `l1:${docNode.l1}`,
-          l2Id: `l2:${docNode.l1}:${docNode.l2}`,
-          docId: docNode.id,
-        };
-        // Expand the doc's L1 and L2 so search highlight is visible
-        expandedL1s.add(docNode.l1);
-        expandedL2s.add(`l2:${docNode.l1}:${docNode.l2}`);
-        renderGraph();
-      }
-    });
-
-    searchResultsList.appendChild(li);
-  }
+  lastSearchMatches = data.matches;
+  activeResultFile = null;
+  renderSearchResults(data.matches);
 }
 
 // ── Theme toggle ────────────────────────────────────────────────────────────

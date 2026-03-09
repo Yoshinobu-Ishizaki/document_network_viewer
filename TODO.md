@@ -8,8 +8,9 @@
 - [x] When subcategory is selected and it is opened, docs beloinging to it must be highlighted in a same selection highlight color.
 - [x] When edge is selected, docs/(sub)categories connected should be highlighted.
 - [x] When mouse is clicked and moved, selected items (= highlighted items) should be moved simultaneously.
+- [x] While search result is viewed and when docs selected by search result sub window, if its belonging category/subcategory is changed, search result list must be refreshed to update each docs category/subcategory data.
+- [ ] In main pane, when click then drag occured and clicked element is none, draw a rubber band rectangle, and set covered items selected when mouse's left button up. For default dragging action of whole main pane, should occur when right mouse clicked on vacant space.
 - [ ] For calculation of semantic distance between categories/documents, make user able to choose algorithm for its calculation. Select a couple of commonly used methods such as TF-IDT, BM25, etc. Please recommend 2 or 3 good ones.
-- [ ] While search result is viewed and when docs selected by search result sub window, if its belonging category/subcategory is changed, search result list must be refreshed to update each docs category/subcategory data.
 - [ ] Implement filtering function. But I'm not fully decided for its UI. Please let me consult with you for its design before going to implementation.
-- [ ] Re-implement rearrangment algorithm. L1 nodes must devide whole location area in a main pane into non overlapping areas of which occupying space is proportional to its relative ratio of number of containing docs respectively. And L2 nodes should samely devide its parental area. Docs should devide its parental subcategory area into non-evenly speaced area. If semantic distance is smaller, the docs should make a cluster.
- 
+- [ ] Re-implement rearrangment algorithm for nodes in the main pane. L1 nodes must devide whole location area in a main pane into non overlapping areas of which occupying space is proportional to its relative ratio of number of containing docs respectively. And L2 nodes should samely devide its parental area. Docs should devide its parental subcategory area into non-evenly speaced area. If semantic distance is smaller, the docs should make a cluster.
+  

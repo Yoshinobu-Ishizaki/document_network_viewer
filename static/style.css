@@ -185,11 +185,18 @@ header h1 {
 #search-results-list li.result-selected .result-name { color: #fff; }
 #search-results-list li.result-selected .result-snippet { color: rgba(255,255,255,0.75); }
 #search-results-list .result-name {
-  font-size: 0.85rem;
-  font-weight: 500;
+  font-size: 1.05rem;
+  font-weight: 700;
   color: var(--text);
   margin-bottom: 2px;
 }
+#search-results-list .result-category {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  margin-bottom: 3px;
+  font-style: italic;
+}
+#search-results-list li.result-selected .result-category { color: rgba(255,255,255,0.7); }
 #search-results-list .result-snippet {
   font-size: 0.75rem;
   color: var(--text-muted);
