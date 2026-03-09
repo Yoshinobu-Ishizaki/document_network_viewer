@@ -5,7 +5,7 @@ Usage:
     uv run app.py
 
 Serves the web UI at http://localhost:8000
-Requires data/index.json to exist (run preprocess.py first).
+Requires .local/index.json to exist (run preprocess.py first).
 """
 
 import json
@@ -27,11 +27,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 DATA_DIR = Path("data")
-INDEX_FILE = DATA_DIR / "index.json"
-UI_STATE_FILE = DATA_DIR / "ui_state.json"
-TEXT_CACHE_DIR = DATA_DIR / ".text_cache"
+LOCAL_DIR = Path(".local")
+LOCAL_DIR.mkdir(exist_ok=True)
+INDEX_FILE = LOCAL_DIR / "index.json"
+UI_STATE_FILE = LOCAL_DIR / "ui_state.json"
+TEXT_CACHE_DIR = LOCAL_DIR / ".text_cache"
 STATIC_DIR = Path("static")
-SETTINGS_FILE = Path("settings.json")
+SETTINGS_FILE = LOCAL_DIR / "settings.json"
 
 DEFAULT_SETTINGS: dict = {"colorMode": "auto", "lightColors": {}, "darkColors": {}}
 
@@ -44,7 +46,7 @@ def get_graph() -> JSONResponse:
     if not INDEX_FILE.exists():
         raise HTTPException(
             status_code=503,
-            detail="data/index.json not found. Run preprocess.py first.",
+            detail=".local/index.json not found. Run preprocess.py first.",
         )
     with open(INDEX_FILE, encoding="utf-8") as f:
         data = json.load(f)
@@ -113,7 +115,7 @@ class MoveDocRequest(BaseModel):
 
 def load_index() -> dict[str, Any]:
     if not INDEX_FILE.exists():
-        raise HTTPException(status_code=503, detail="data/index.json not found. Run preprocess.py first.")
+        raise HTTPException(status_code=503, detail=".local/index.json not found. Run preprocess.py first.")
     with open(INDEX_FILE, encoding="utf-8") as f:
         return json.load(f)
 

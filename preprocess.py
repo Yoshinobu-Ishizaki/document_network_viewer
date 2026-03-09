@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Preprocess documents in data/ and generate data/index.json.
+"""Preprocess documents in data/ and generate .local/index.json.
 
 Usage:
     uv run preprocess.py
 
 Reads config.yaml for L1 categories, calls the Claude API to assign each
 document to an L1 category and generate an L2 subcategory, then writes
-data/index.json for the web app to consume.
+.local/index.json for the web app to consume.
 
-Results are cached in data/.cache.json — only changed files trigger new
+Results are cached in .local/.cache.json — only changed files trigger new
 API calls on subsequent runs.
 """
 
@@ -29,9 +29,10 @@ from dotenv import load_dotenv
 load_dotenv()  # reads .env if present; env vars already set take priority
 
 DATA_DIR = Path("data")
-CACHE_FILE = DATA_DIR / ".cache.json"
-INDEX_FILE = DATA_DIR / "index.json"
-TEXT_CACHE_DIR = DATA_DIR / ".text_cache"
+LOCAL_DIR = Path(".local")
+CACHE_FILE = LOCAL_DIR / ".cache.json"
+INDEX_FILE = LOCAL_DIR / "index.json"
+TEXT_CACHE_DIR = LOCAL_DIR / ".text_cache"
 CONFIG_FILE = Path("config.yaml")
 
 BATCH_SIZE = 20
@@ -694,7 +695,7 @@ Documents:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Preprocess documents into data/index.json")
+    parser = argparse.ArgumentParser(description="Preprocess documents into .local/index.json")
     parser.add_argument(
         "--rebuild",
         action="store_true",
@@ -702,13 +703,14 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    LOCAL_DIR.mkdir(exist_ok=True)
     categories, constraints = load_config()
     cache = load_cache()
     client = LLMClient()
 
     all_docs = scan_documents()
     if not all_docs:
-        print("No documents found in data/")
+        print("No documents found in data/")  # source docs still in data/
         sys.exit(1)
 
     print(f"Found {len(all_docs)} document(s).")

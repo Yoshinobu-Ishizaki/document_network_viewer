@@ -1,6 +1,10 @@
 - [x] Do not restrict max docs in a subcategory.
 - [x] Remember nodes' position when app ends. Write it back those position data to file before quitting. Please recommend the good way to implement it.
 - [x] Also remember open/close state of each nodes.
+- [x] Update for change of saving location for `index.json,.cache.json, .text_cache/`, etc. Let `data/` folder read-only. Any files created by `preprocess.py` or `app.py` should be saved in `.local` folder, except `.env`.
+- [ ] When merging subcategory, self-loop edge is created for the merged one. Do not allow self-loop edge. Remove if it occurs.
+- [ ] For calculation of semantic distance between categories/documents, make user able to choose algorithm for its calculation. Select a couple of commonly used methods such as TF-IDT, BM25, etc. Please recommend the good ones.
 - [ ] When subcategory is selected and it is opened, docs beloinging to it must be highlighted in a same selection highlight color.
 - [ ] For default nodes' locaton for docs must be near its belonging subcategory node. nodes location of subcategories should be near to its parent category node. Add "rearange node" button next to Expand/collapse button to recalculate node position for all.
 - [ ] When docs belonging category/subcategory is changed, search result list must be refreshed to update each docs category/subcategory data.
+
