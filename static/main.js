@@ -9,6 +9,7 @@ let searchHighlight = null;    // { l1Id, l2Id, docId } | null
 let nodesDataRef = null;
 let edgesDataRef = null;
 let nodePositionCache = {};    // { [nodeId]: {x, y} } — persists across renderGraph calls
+let nodeAreaCache = {};        // { [nodeId]: {x1,y1,x2,y2} } — treemap cell rects
 let skipPositionSnapshot = false; // when true, renderGraph won't snapshot current positions
 let selectionState = null;    // { type: 'node', id } or { type: 'edge', edgeId, endpoints: Set }
 let dragGroupStart = null;    // { draggedId, positions: { [id]: {x,y} } } | null
@@ -565,23 +566,165 @@ function computeInitialPositions(nodes, edges, spread = 350) {
   return positions;
 }
 
-// Compute initial positions with hierarchical grouping:
-// - L1 nodes: MDS among themselves
-// - L2 nodes: MDS within each L1 group, offset relative to L1 parent
-// - Doc nodes: MDS within each L2 group, offset relative to L2 parent
-function computeHierarchicalPositions(allNodes, allEdges, existingPositions = {}) {
-  const positions = { ...existingPositions };
+// ── Treemap layout helpers ──────────────────────────────────────────────────
 
-  // L1 nodes
-  const l1Nodes = allNodes.filter(n => n.level === 1);
-  if (l1Nodes.length > 0) {
-    const l1Edges = allEdges.filter(e =>
-      l1Nodes.some(n => n.id === e.from) && l1Nodes.some(n => n.id === e.to));
-    const l1Pos = computeInitialPositions(l1Nodes, l1Edges);
-    Object.assign(positions, l1Pos);
+function _worstRatio(areas, rowArea, shortSide) {
+  const stripLen = rowArea / shortSide;
+  let worst = 0;
+  for (const a of areas) {
+    const itemLen = a / stripLen;
+    const r = Math.max(stripLen / itemLen, itemLen / stripLen);
+    if (r > worst) worst = r;
+  }
+  return worst;
+}
+
+function _squarifyHelper(items, rect, results) {
+  if (items.length === 0) return;
+  if (items.length === 1) {
+    results.push({ id: items[0].id, rect });
+    return;
   }
 
-  // L2 nodes grouped by L1
+  const totalArea = items.reduce((s, it) => s + it.size, 0);
+  const rectW = rect.x2 - rect.x1;
+  const rectH = rect.y2 - rect.y1;
+  const rectArea = rectW * rectH;
+  const shortSide = Math.min(rectW, rectH);
+
+  // Build optimal row greedily
+  let rowItems = [];
+  let rowArea = 0;
+  let prevWorst = Infinity;
+  for (let i = 0; i < items.length; i++) {
+    const normalizedArea = (items[i].size / totalArea) * rectArea;
+    const candidate = [...rowItems, { ...items[i], normArea: normalizedArea }];
+    const candidateArea = rowArea + normalizedArea;
+    const candidateWorst = _worstRatio(candidate.map(c => c.normArea), candidateArea, shortSide);
+    if (rowItems.length > 0 && candidateWorst > prevWorst) break;
+    rowItems = candidate;
+    rowArea = candidateArea;
+    prevWorst = candidateWorst;
+  }
+
+  // Lay out the row strip
+  const isHorizontal = rectW >= rectH; // strip along short side
+  const stripSize = rowArea / (isHorizontal ? rectH : rectW);
+  let cursor = isHorizontal ? rect.x1 : rect.y1;
+  const rowTotalSize = rowItems.reduce((s, it) => s + it.normArea, 0);
+  for (const it of rowItems) {
+    const itemLen = (it.normArea / rowTotalSize) * (isHorizontal ? rectH : rectW);
+    let itemRect;
+    if (isHorizontal) {
+      itemRect = { x1: rect.x1, y1: cursor, x2: rect.x1 + stripSize, y2: cursor + itemLen };
+    } else {
+      itemRect = { x1: cursor, y1: rect.y1, x2: cursor + itemLen, y2: rect.y1 + stripSize };
+    }
+    results.push({ id: it.id, rect: itemRect });
+    cursor += itemLen;
+  }
+
+  // Recurse on remaining items in remaining sub-rect
+  const remaining = items.slice(rowItems.length);
+  if (remaining.length === 0) return;
+  let remainRect;
+  if (isHorizontal) {
+    remainRect = { x1: rect.x1 + stripSize, y1: rect.y1, x2: rect.x2, y2: rect.y2 };
+  } else {
+    remainRect = { x1: rect.x1, y1: rect.y1 + stripSize, x2: rect.x2, y2: rect.y2 };
+  }
+  _squarifyHelper(remaining, remainRect, results);
+}
+
+function squarifiedTreemap(items, rect) {
+  // items: [{id, size}], size > 0
+  // returns [{id, rect: {x1,y1,x2,y2}}]
+  const sorted = [...items].sort((a, b) => b.size - a.size);
+  const totalSize = sorted.reduce((s, it) => s + it.size, 0);
+  if (totalSize === 0) return sorted.map(it => ({ id: it.id, rect }));
+  const results = [];
+  _squarifyHelper(sorted, rect, results);
+  return results;
+}
+
+function padRect(rect, padding) {
+  return {
+    x1: rect.x1 + padding,
+    y1: rect.y1 + padding,
+    x2: rect.x2 - padding,
+    y2: rect.y2 - padding,
+  };
+}
+
+function scalePosToRect(posMap, rect) {
+  // Scale MDS output {id: {x,y}} to fill rect
+  const ids = Object.keys(posMap);
+  if (ids.length === 0) return {};
+  const cx = (rect.x1 + rect.x2) / 2;
+  const cy = (rect.y1 + rect.y2) / 2;
+  if (ids.length === 1) return { [ids[0]]: { x: cx, y: cy } };
+
+  const xs = ids.map(id => posMap[id].x);
+  const ys = ids.map(id => posMap[id].y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const rangeX = maxX - minX, rangeY = maxY - minY;
+  const outW = rect.x2 - rect.x1, outH = rect.y2 - rect.y1;
+
+  const result = {};
+  for (const id of ids) {
+    const nx = rangeX > 1e-6 ? (posMap[id].x - minX) / rangeX : 0.5;
+    const ny = rangeY > 1e-6 ? (posMap[id].y - minY) / rangeY : 0.5;
+    result[id] = { x: rect.x1 + nx * outW, y: rect.y1 + ny * outH };
+  }
+  return result;
+}
+
+// Compute initial positions using proportional treemap layout:
+// - L1 nodes divide the viewport by doc count
+// - L2 nodes divide their L1 area by doc count
+// - Doc nodes fill their L2 area using MDS semantic clustering
+function computeProportionalPositions(allNodes, allEdges) {
+  const positions = {};
+  const VIEWPORT = { x1: -1500, y1: -1000, x2: 1500, y2: 1000 };
+
+  // Count docs per L1
+  const docCountByL1 = {};
+  for (const n of graphData.nodes) {
+    if (n.level === 3) {
+      docCountByL1[n.l1] = (docCountByL1[n.l1] || 0) + 1;
+    }
+  }
+
+  // Step 1: L1 nodes
+  const l1Nodes = allNodes.filter(n => n.level === 1);
+  const newL1Nodes = l1Nodes.filter(n => !nodePositionCache[n.id]);
+  if (newL1Nodes.length > 0 || l1Nodes.some(n => !nodeAreaCache[n.id])) {
+    const l1Items = l1Nodes.map(n => ({
+      id: n.id,
+      size: Math.max(docCountByL1[n._baseLabel || n.label] || 1, 1),
+    }));
+    const l1Cells = squarifiedTreemap(l1Items, VIEWPORT);
+    for (const cell of l1Cells) {
+      nodeAreaCache[cell.id] = cell.rect;
+      if (!nodePositionCache[cell.id]) {
+        const rx = (cell.rect.x1 + cell.rect.x2) / 2;
+        const ry = (cell.rect.y1 + cell.rect.y2) / 2;
+        positions[cell.id] = { x: rx, y: ry };
+      }
+    }
+  }
+
+  // Count docs per L2
+  const docCountByL2 = {};
+  for (const n of graphData.nodes) {
+    if (n.level === 3) {
+      const key = `l2:${n.l1}:${n.l2}`;
+      docCountByL2[key] = (docCountByL2[key] || 0) + 1;
+    }
+  }
+
+  // Step 2: L2 nodes grouped by L1
   const l2Nodes = allNodes.filter(n => n.level === 2);
   const l2ByL1 = {};
   for (const n of l2Nodes) {
@@ -589,26 +732,28 @@ function computeHierarchicalPositions(allNodes, allEdges, existingPositions = {}
   }
   for (const [l1Label, group] of Object.entries(l2ByL1)) {
     const l1Id = `l1:${l1Label}`;
-    const l1Center = positions[l1Id] || { x: 0, y: 0 };
-    const groupEdges = allEdges.filter(e =>
-      group.some(n => n.id === e.from) && group.some(n => n.id === e.to));
-    const groupPos = computeInitialPositions(group, groupEdges);
+    const l1Rect = nodeAreaCache[l1Id];
+    if (!l1Rect) continue;
+    const hasNewL2 = group.some(n => !nodePositionCache[n.id]);
+    const needsAreaUpdate = group.some(n => !nodeAreaCache[n.id]);
+    if (!hasNewL2 && !needsAreaUpdate) continue;
 
-    // Offset so cluster is near L1 parent
-    const OFFSET = 400;
-    const angle = (Object.keys(l2ByL1).indexOf(l1Label) / Object.keys(l2ByL1).length) * 2 * Math.PI;
-    const ox = l1Center.x + Math.cos(angle) * OFFSET;
-    const oy = l1Center.y + Math.sin(angle) * OFFSET;
-    for (const [id, pos] of Object.entries(groupPos)) {
-      positions[id] = { x: pos.x + ox, y: pos.y + oy };
-    }
-    // If only 1 node, place near parent
-    if (group.length === 1) {
-      positions[group[0].id] = { x: ox, y: oy };
+    const l2Items = group.map(n => ({
+      id: n.id,
+      size: Math.max(docCountByL2[n.id] || 1, 1),
+    }));
+    const l2Cells = squarifiedTreemap(l2Items, padRect(l1Rect, 80));
+    for (const cell of l2Cells) {
+      nodeAreaCache[cell.id] = cell.rect;
+      if (!nodePositionCache[cell.id]) {
+        const rx = (cell.rect.x1 + cell.rect.x2) / 2;
+        const ry = (cell.rect.y1 + cell.rect.y2) / 2;
+        positions[cell.id] = { x: rx, y: ry };
+      }
     }
   }
 
-  // Doc nodes grouped by L2
+  // Step 3: Doc nodes grouped by L2
   const docNodes = allNodes.filter(n => n.level === 3);
   const docsByL2 = {};
   for (const n of docNodes) {
@@ -616,21 +761,18 @@ function computeHierarchicalPositions(allNodes, allEdges, existingPositions = {}
     (docsByL2[key] = docsByL2[key] || []).push(n);
   }
   for (const [l2Id, group] of Object.entries(docsByL2)) {
-    const l2Center = positions[l2Id] || { x: 0, y: 0 };
+    const newDocs = group.filter(n => !nodePositionCache[n.id]);
+    if (newDocs.length === 0) continue;
+    const l2Rect = nodeAreaCache[l2Id];
+    if (!l2Rect) continue;
+
+    const innerRect = padRect(l2Rect, 40);
     const groupEdges = allEdges.filter(e =>
       group.some(n => n.id === e.from) && group.some(n => n.id === e.to));
-    const groupPos = computeInitialPositions(group, groupEdges, 100);
-
-    const OFFSET = 130;
-    const l2Keys = Object.keys(docsByL2);
-    const angle = (l2Keys.indexOf(l2Id) / Math.max(l2Keys.length, 1)) * 2 * Math.PI;
-    const ox = l2Center.x + Math.cos(angle) * OFFSET;
-    const oy = l2Center.y + Math.sin(angle) * OFFSET;
-    for (const [id, pos] of Object.entries(groupPos)) {
-      positions[id] = { x: pos.x + ox, y: pos.y + oy };
-    }
-    if (group.length === 1) {
-      positions[group[0].id] = { x: ox, y: oy };
+    const mdsPos = computeInitialPositions(group, groupEdges, 100);
+    const scaled = scalePosToRect(mdsPos, innerRect);
+    for (const n of newDocs) {
+      if (scaled[n.id]) positions[n.id] = scaled[n.id];
     }
   }
 
@@ -652,8 +794,8 @@ function renderGraph() {
   // Compute positions for nodes not yet in cache (before creating DataSet)
   const newNodes = allNodes.filter(n => !nodePositionCache[n.id]);
   if (newNodes.length > 0) {
-    const newEdges = edgesForNodes(newNodes.map(n => n.id));
-    const initPos = computeHierarchicalPositions(newNodes, newEdges, nodePositionCache);
+    const allEdges = edgesForNodes(allNodes.map(n => n.id));
+    const initPos = computeProportionalPositions(allNodes, allEdges);
     for (const [id, pos] of Object.entries(initPos)) {
       nodePositionCache[id] = pos;
     }
@@ -807,6 +949,7 @@ async function reloadGraph() {
   searchHighlight = null;
   selectionState = null;
   nodePositionCache = {};
+  nodeAreaCache = {};
   renderGraph();
   if (lastSearchMatches && !searchResults.classList.contains("hidden")) {
     renderSearchResults(lastSearchMatches);
@@ -854,6 +997,7 @@ document.getElementById("collapse-all-btn").addEventListener("click", () => {
 });
 document.getElementById("rearrange-btn").addEventListener("click", () => {
   nodePositionCache = {};
+  nodeAreaCache = {};
   skipPositionSnapshot = true;
   renderGraph();
 });
