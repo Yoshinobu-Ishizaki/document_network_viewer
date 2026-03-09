@@ -1,16 +1,3 @@
-- [x] Do not restrict max docs in a subcategory.
-- [x] Remember nodes' position when app ends. Write it back those position data to file before quitting. Please recommend the good way to implement it.
-- [x] Also remember open/close state of each nodes.
-- [x] Update for change of saving location for `index.json,.cache.json, .text_cache/`, etc. Let `data/` folder read-only. Any files created by `preprocess.py` or `app.py` should be saved in `.local` folder, except `.env`.
-- [x] For default nodes' locaton for docs must be near its belonging subcategory node. nodes location of subcategories should be near to its parent category node. Add "rearange node" button next to Expand/collapse button to recalculate node position for all.
-- [x] When merging subcategory, self-loop edge is created for the merged one. Do not allow self-loop edge. Remove if it occurs.
-- [x] BUG: When merging subcategories, for example if I merge `B` into `A`, if there was edges between `A` and `C`, `B` and `C`, merged `A` has 2 egdes to `C`. That is not correct. The edge from `A` to `C` should be also combined into one.
-- [x] When subcategory is selected and it is opened, docs beloinging to it must be highlighted in a same selection highlight color.
-- [x] When edge is selected, docs/(sub)categories connected should be highlighted.
-- [x] When mouse is clicked and moved, selected items (= highlighted items) should be moved simultaneously.
-- [x] While search result is viewed and when docs selected by search result sub window, if its belonging category/subcategory is changed, search result list must be refreshed to update each docs category/subcategory data.
-- [x] In main pane, when click then drag occured and clicked element is none, draw a rubber band rectangle, and set covered items selected when mouse's left button up. For default dragging action of whole main pane, should occur when right mouse clicked on vacant space.
-- [x] Implement filtering function. But I'm not fully decided for its UI. Please let me consult with you for its design before going to implementation.
 - [ ] Re-implement rearrangment algorithm for nodes in the main pane. L1 nodes must devide whole location area in a main pane into non overlapping areas of which occupying space is proportional to its relative ratio of number of containing docs respectively. And L2 nodes should samely devide its parental area. Docs should devide its parental subcategory area into non-evenly speaced area. If semantic distance is smaller, the docs should make a cluster.
 - [ ] For calculation of semantic distance between categories/documents, make user able to choose algorithm for its calculation. Select a couple of commonly used methods such as TF-IDT, BM25, etc. Please recommend 2 or 3 good ones.
   
