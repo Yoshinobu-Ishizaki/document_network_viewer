@@ -41,6 +41,22 @@ app = FastAPI(title="Document Network Viewer")
 
 
 
+def deduplicate_edges(edges: list) -> list:
+    """Remove duplicate edges with same endpoint pair, keeping the one with max weight."""
+    seen: dict[tuple, int] = {}  # normalized (from, to) → index in result
+    result = []
+    for edge in edges:
+        key = tuple(sorted([edge["from"], edge["to"]]))
+        if key in seen:
+            existing = result[seen[key]]
+            if edge.get("weight", 0) > existing.get("weight", 0):
+                result[seen[key]] = edge
+        else:
+            seen[key] = len(result)
+            result.append(edge)
+    return result
+
+
 @app.get("/api/graph")
 def get_graph() -> JSONResponse:
     if not INDEX_FILE.exists():
@@ -50,6 +66,7 @@ def get_graph() -> JSONResponse:
         )
     with open(INDEX_FILE, encoding="utf-8") as f:
         data = json.load(f)
+    data["edges"] = deduplicate_edges(data["edges"])
     return JSONResponse(data)
 
 
@@ -260,7 +277,7 @@ def merge_subcategory(req: MergeRequest) -> JSONResponse:
         if edge["from"] == edge["to"]:
             continue
         updated_edges.append(edge)
-    data["edges"] = updated_edges
+    data["edges"] = deduplicate_edges(updated_edges)
 
     # Remove the source L2 node
     data["nodes"] = [n for n in data["nodes"] if n.get("id") != source_id]
