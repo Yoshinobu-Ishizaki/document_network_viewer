@@ -1,4 +1,2 @@
-- [x] let @preprocess.py to show progress while its running.
-- [x] @preprocess.py is slow. please consider speed it up.
-- [ ] For 3 different algorithm of preprocess.py, create a comparison document for those in "docs" folder. Let it name "semantic-distance-comparison.py". Use marimo to write that document. 
-- [ ] Create README.md to tell user how to use this app. 
+- [x] For 3 different algorithm of preprocess.py, create a comparison document for those in "docs" folder. Let it name "semantic-distance-comparison.py". Use marimo to write that document.
+- [ ] Create README.md to tell user how to use this app. Please add reference to documents inside docs folder for further understandins. 
