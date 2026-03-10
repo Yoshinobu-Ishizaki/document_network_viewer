@@ -1,2 +1,2 @@
 - [x] For 3 different algorithm of preprocess.py, create a comparison document for those in "docs" folder. Let it name "semantic-distance-comparison.py". Use marimo to write that document.
-- [ ] Create README.md to tell user how to use this app. Please add reference to documents inside docs folder for further understandins. 
+- [x] Create README.md to tell user how to use this app. Please add reference to documents inside docs folder for further understandins.
