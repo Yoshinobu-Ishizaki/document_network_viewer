@@ -260,6 +260,7 @@ dependencies = [
     { name = "sentence-transformers" },
     { name = "torch", version = "2.10.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
     { name = "torch", version = "2.10.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
+    { name = "tqdm" },
     { name = "uvicorn" },
 ]
 
@@ -280,6 +281,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "sentence-transformers", specifier = ">=5.2.3" },
     { name = "torch", specifier = ">=2.10.0", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "tqdm", specifier = ">=4.67.3" },
     { name = "uvicorn", specifier = ">=0.41.0" },
 ]
 

@@ -25,6 +25,7 @@ from pathlib import Path
 import frontmatter
 import yaml
 from dotenv import load_dotenv
+from tqdm import tqdm
 
 load_dotenv()  # reads .env if present; env vars already set take priority
 
@@ -141,7 +142,7 @@ def load_index() -> dict | None:
 def write_text_cache(all_docs: list[Path], cache: dict) -> None:
     """Write extracted text for each doc to .text_cache/ for keyword search."""
     TEXT_CACHE_DIR.mkdir(exist_ok=True)
-    for path in all_docs:
+    for path in tqdm(all_docs, desc="Writing text cache", unit="file", leave=False):
         rel = str(path.relative_to(DATA_DIR))
         entry = cache.get(rel, {})
         text = entry.get("content", "")
@@ -378,7 +379,7 @@ def _embed_similarities(contents: dict[str, str]) -> dict[tuple[str, str], float
         print(f"  Encoding {len(to_encode_ids)} text(s) with sentence-transformer…")
         model = _get_embed_model()
         texts_to_encode = [contents[i] for i in to_encode_ids]
-        new_embeddings = model.encode(texts_to_encode, normalize_embeddings=True)
+        new_embeddings = model.encode(texts_to_encode, normalize_embeddings=True, show_progress_bar=True)
         for i, emb in zip(to_encode_ids, new_embeddings):
             embed_cache[text_hashes[i]] = emb.tolist()
         EMBED_CACHE_FILE.parent.mkdir(exist_ok=True)
@@ -552,7 +553,7 @@ def build_index(categorized: list[dict], algo: str = "embed") -> dict:
         embed_sims = _embed_similarities(all_embed_contents)
 
     # ── Doc↔Doc semantic edges (within same L2) ───────────────────────────────
-    for doc_ids_in_l2 in docs_by_l2.values():
+    for doc_ids_in_l2 in tqdm(docs_by_l2.values(), desc="Computing doc edges", unit="group", leave=False):
         for i in range(len(doc_ids_in_l2)):
             for j in range(i + 1, len(doc_ids_in_l2)):
                 da, db = doc_ids_in_l2[i], doc_ids_in_l2[j]
@@ -575,7 +576,7 @@ def build_index(categorized: list[dict], algo: str = "embed") -> dict:
 
     # ── L2↔L2 semantic edges (within same L1) ────────────────────────────────
     l2_keys = list(l2_seen.keys())
-    for i in range(len(l2_keys)):
+    for i in tqdm(range(len(l2_keys)), desc="Computing L2 edges", unit="node", leave=False):
         for j in range(i + 1, len(l2_keys)):
             ka, kb = l2_keys[i], l2_keys[j]
             if ka[0] != kb[0]:  # must share same L1
@@ -760,10 +761,10 @@ def categorize_new_docs(
     cache: dict,
 ) -> None:
     """Call LLM for uncached/changed docs and update cache in-place."""
-    print(f"Categorizing {len(to_process)} document(s) via Claude API...")
-    for i in range(0, len(to_process), BATCH_SIZE):
+    print(f"Categorizing {len(to_process)} document(s) via LLM...")
+    batches = range(0, len(to_process), BATCH_SIZE)
+    for i in tqdm(batches, desc="Categorizing batches", unit="batch"):
         batch = to_process[i : i + BATCH_SIZE]
-        print(f"  Batch {i // BATCH_SIZE + 1} ({len(batch)} docs)...")
         results = categorize_batch(client, batch, categories)
         covered_indices: set[int] = set()
         for r in results:
@@ -792,7 +793,7 @@ def categorize_new_docs(
 def backfill_content(cache: dict, all_docs: list[Path]) -> None:
     """Ensure every cache entry has a content field (back-compat)."""
     updated = False
-    for path in all_docs:
+    for path in tqdm(all_docs, desc="Backfilling content", unit="file", leave=False):
         rel = str(path.relative_to(DATA_DIR))
         entry = cache.get(rel, {})
         if entry and "content" not in entry:
@@ -818,10 +819,9 @@ def refine_l2_groups(
 
     refined = {doc["filename"]: doc["l2"] for doc in categorized}
 
-    for l1, docs in by_l1.items():
+    for l1, docs in tqdm(by_l1.items(), desc="Refining subcategories", unit="category"):
         if len(docs) < 2:
             continue  # nothing to group
-        print(f"  Refining L2 subcategories for '{l1}' ({len(docs)} docs)…")
         docs_str = "\n\n".join(
             f"[{i + 1}] filename: {d['filename']}\n"
             f"current draft subcategory: {d['l2']}\n"
