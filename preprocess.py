@@ -20,6 +20,7 @@ import os
 import subprocess
 import sys
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import frontmatter
@@ -762,10 +763,18 @@ def categorize_new_docs(
 ) -> None:
     """Call LLM for uncached/changed docs and update cache in-place."""
     print(f"Categorizing {len(to_process)} document(s) via LLM...")
-    batches = range(0, len(to_process), BATCH_SIZE)
-    for i in tqdm(batches, desc="Categorizing batches", unit="batch"):
-        batch = to_process[i : i + BATCH_SIZE]
-        results = categorize_batch(client, batch, categories)
+    batches = [to_process[i : i + BATCH_SIZE] for i in range(0, len(to_process), BATCH_SIZE)]
+
+    def _run_batch(batch: list[dict]) -> tuple[list[dict], list[dict]]:
+        return batch, categorize_batch(client, batch, categories)
+
+    all_results: list[tuple[list[dict], list[dict]]] = []
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(_run_batch, b): b for b in batches}
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Categorizing batches", unit="batch"):
+            all_results.append(future.result())
+
+    for batch, results in all_results:
         covered_indices: set[int] = set()
         for r in results:
             doc = batch[r["index"] - 1]
@@ -779,7 +788,7 @@ def categorize_new_docs(
         # Fallback for docs the LLM omitted from its response
         for idx, doc in enumerate(batch):
             if idx not in covered_indices:
-                print(f"  WARNING: LLM did not categorize '{doc['filename']}' — assigning to fallback category.")
+                tqdm.write(f"  WARNING: LLM did not categorize '{doc['filename']}' — assigning to fallback category.")
                 cache[doc["filename"]] = {
                     "hash": doc["hash"],
                     "l1": categories[0],
@@ -819,9 +828,7 @@ def refine_l2_groups(
 
     refined = {doc["filename"]: doc["l2"] for doc in categorized}
 
-    for l1, docs in tqdm(by_l1.items(), desc="Refining subcategories", unit="category"):
-        if len(docs) < 2:
-            continue  # nothing to group
+    def _refine_one(l1: str, docs: list[dict]) -> dict[str, str]:
         docs_str = "\n\n".join(
             f"[{i + 1}] filename: {d['filename']}\n"
             f"current draft subcategory: {d['l2']}\n"
@@ -851,11 +858,16 @@ Documents:
             start = text.find("[")
             end = text.rfind("]") + 1
             results = json.loads(text[start:end])
-            for r in results:
-                doc = docs[r["index"] - 1]
-                refined[doc["filename"]] = r["l2"]
+            return {docs[r["index"] - 1]["filename"]: r["l2"] for r in results}
         except Exception as e:
-            print(f"  WARNING: L2 refinement failed for '{l1}': {e} — keeping draft names.")
+            tqdm.write(f"  WARNING: L2 refinement failed for '{l1}': {e} — keeping draft names.")
+            return {}
+
+    eligible = {l1: docs for l1, docs in by_l1.items() if len(docs) >= 2}
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(_refine_one, l1, docs): l1 for l1, docs in eligible.items()}
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Refining subcategories", unit="category"):
+            refined.update(future.result())
 
     return [{**doc, "l2": refined[doc["filename"]]} for doc in categorized]
 
@@ -893,13 +905,19 @@ def main() -> None:
     print(f"Found {len(all_docs)} document(s).")
 
     # ── Determine which files need LLM categorization ─────────────────────────
-    to_process = []
-    for path in all_docs:
-        h = file_hash(path)
+    def _hash_and_read(path: Path) -> tuple[str, str, str]:
         rel = str(path.relative_to(DATA_DIR))
-        if rel not in cache or cache[rel]["hash"] != h:
-            content = read_document(path)
-            to_process.append({"filename": rel, "content": content, "hash": h})
+        h = file_hash(path)
+        content = read_document(path)
+        return rel, h, content
+
+    to_process = []
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(_hash_and_read, p): p for p in all_docs}
+        for future in tqdm(as_completed(futures), total=len(all_docs), desc="Scanning files", unit="file"):
+            rel, h, content = future.result()
+            if rel not in cache or cache[rel]["hash"] != h:
+                to_process.append({"filename": rel, "content": content, "hash": h})
 
     if to_process:
         categorize_new_docs(client, to_process, categories, cache)
