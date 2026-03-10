@@ -13,6 +13,8 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "python-frontmatter>=1.1.0",
     "pyyaml>=6.0.3",
+    "sentence-transformers>=5.2.3",
+    "torch>=2.10.0",
     "uvicorn>=0.41.0",
 ]
 
@@ -20,3 +22,13 @@ dependencies = [
 dev = [
     "pytest>=9.0.2",
 ]
+
+# Use CPU-only PyTorch wheels to avoid downloading multi-GB CUDA packages.
+# sentence-transformers only needs CPU inference for embedding generation.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }

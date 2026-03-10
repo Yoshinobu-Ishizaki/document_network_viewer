@@ -33,6 +33,7 @@ LOCAL_DIR = Path(".local")
 CACHE_FILE = LOCAL_DIR / ".cache.json"
 INDEX_FILE = LOCAL_DIR / "index.json"
 TEXT_CACHE_DIR = LOCAL_DIR / ".text_cache"
+EMBED_CACHE_FILE = LOCAL_DIR / ".embed_cache.json"
 CONFIG_FILE = Path("config.yaml")
 
 BATCH_SIZE = 20
@@ -316,13 +317,93 @@ def _cosine(a: dict, b: dict) -> float:
     return dot / (mag_a * mag_b)
 
 
+_EMBED_MODEL = None
+
+
+def _get_embed_model():
+    global _EMBED_MODEL
+    if _EMBED_MODEL is None:
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError:
+            sys.exit("'embed' algo requires sentence-transformers: uv add sentence-transformers")
+        print("  Loading sentence-transformer model (paraphrase-multilingual-MiniLM-L12-v2)…")
+        _EMBED_MODEL = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+    return _EMBED_MODEL
+
+
+def _bm25_vectors(doc_tf: dict[str, Counter], k1: float = 1.5, b: float = 0.75) -> dict[str, dict]:
+    """Compute BM25-weighted term vectors for each document."""
+    N = len(doc_tf)
+    if N == 0:
+        return {}
+    df: Counter = Counter(term for counts in doc_tf.values() for term in counts)
+    doc_lens = {doc_id: sum(counts.values()) for doc_id, counts in doc_tf.items()}
+    avgdl = sum(doc_lens.values()) / N
+
+    def bm25_idf(term: str) -> float:
+        return math.log((N - df[term] + 0.5) / (df[term] + 0.5) + 1.0)
+
+    result: dict[str, dict] = {}
+    for doc_id, counts in doc_tf.items():
+        dl = doc_lens[doc_id]
+        result[doc_id] = {
+            term: (tf * (k1 + 1) / (tf + k1 * (1 - b + b * dl / avgdl))) * bm25_idf(term)
+            for term, tf in counts.items()
+        }
+    return result
+
+
+def _embed_similarities(contents: dict[str, str]) -> dict[tuple[str, str], float]:
+    """Compute pairwise cosine similarities using sentence-transformer embeddings.
+
+    Uses EMBED_CACHE_FILE to skip re-encoding unchanged texts.
+    contents: {id -> text}
+    Returns: {(id_a, id_b) -> similarity} for all pairs.
+    """
+    if len(contents) < 2:
+        return {}
+
+    # Load embedding cache (keyed by md5 of text)
+    embed_cache: dict[str, list] = {}
+    if EMBED_CACHE_FILE.exists():
+        with open(EMBED_CACHE_FILE, encoding="utf-8") as f:
+            embed_cache = json.load(f)
+
+    ids = list(contents.keys())
+    text_hashes = {i: hashlib.md5(contents[i].encode()).hexdigest() for i in ids}
+    to_encode_ids = [i for i in ids if text_hashes[i] not in embed_cache]
+
+    if to_encode_ids:
+        print(f"  Encoding {len(to_encode_ids)} text(s) with sentence-transformer…")
+        model = _get_embed_model()
+        texts_to_encode = [contents[i] for i in to_encode_ids]
+        new_embeddings = model.encode(texts_to_encode, normalize_embeddings=True)
+        for i, emb in zip(to_encode_ids, new_embeddings):
+            embed_cache[text_hashes[i]] = emb.tolist()
+        EMBED_CACHE_FILE.parent.mkdir(exist_ok=True)
+        with open(EMBED_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(embed_cache, f)
+        print(f"  Embed cache updated ({len(embed_cache)} entries).")
+
+    # Compute pairwise similarities via matrix multiply (embeddings are L2-normalised)
+    import numpy as np
+    mat = np.array([embed_cache[text_hashes[i]] for i in ids], dtype="float32")
+    sim_mat = mat @ mat.T
+    sims: dict[tuple[str, str], float] = {}
+    for i in range(len(ids)):
+        for j in range(i + 1, len(ids)):
+            sims[(ids[i], ids[j])] = float(sim_mat[i, j])
+    return sims
+
+
 def _top_keywords(tfidf: dict, n: int = 30) -> dict:
     """Return top-n keywords by TF-IDF score, rounded to 4 decimal places."""
     top = sorted(tfidf.items(), key=lambda x: x[1], reverse=True)[:n]
     return {k: round(v, 4) for k, v in top}
 
 
-def build_index(categorized: list[dict]) -> dict:
+def build_index(categorized: list[dict], algo: str = "embed") -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
 
@@ -428,12 +509,61 @@ def build_index(categorized: list[dict]) -> dict:
         if l1_id in node_by_id:
             node_by_id[l1_id]["keywords"] = _top_keywords(vec, 30)
 
-    # ── Doc↔Doc semantic edges (within same L2, keyword Jaccard similarity) ──
+    print(f"Building index with similarity algorithm: {algo}")
+
+    # ── BM25 vectors (algo == 'bm25') ─────────────────────────────────────────
+    doc_bm25: dict[str, dict] = {}
+    l2_bm25: dict[tuple, dict] = {}
+    l1_bm25: dict[str, dict] = {}
+    if algo == "bm25":
+        doc_bm25 = _bm25_vectors(doc_tf)
+        for l2_key, doc_ids in docs_by_l2.items():
+            agg: dict[str, float] = {}
+            for did in doc_ids:
+                for term, score in doc_bm25[did].items():
+                    agg[term] = agg.get(term, 0.0) + score
+            l2_bm25[l2_key] = agg
+        for l1 in l1_seen:
+            agg = {}
+            for l2_key, vec in l2_bm25.items():
+                if l2_key[0] == l1:
+                    for term, score in vec.items():
+                        agg[term] = agg.get(term, 0.0) + score
+            l1_bm25[l1] = agg
+
+    # ── Embed similarities (algo == 'embed') ──────────────────────────────────
+    embed_sims: dict[tuple[str, str], float] = {}
+    if algo == "embed":
+        doc_embed_content: dict[str, str] = {}
+        for doc in categorized:
+            doc_embed_content[f"doc:{doc['filename']}"] = doc.get("content", "")
+        l2_embed_content: dict[str, str] = {}
+        for l2_key, doc_ids in docs_by_l2.items():
+            l2_embed_content[l2_seen[l2_key]] = " ".join(
+                doc_embed_content.get(did, "") for did in doc_ids
+            )
+        l1_embed_content: dict[str, str] = {}
+        for l1, l1_id in l1_seen.items():
+            l1_embed_content[l1_id] = " ".join(
+                l2_embed_content.get(l2_seen[lk], "")
+                for lk in l2_seen if lk[0] == l1
+            )
+        all_embed_contents = {**doc_embed_content, **l2_embed_content, **l1_embed_content}
+        embed_sims = _embed_similarities(all_embed_contents)
+
+    # ── Doc↔Doc semantic edges (within same L2) ───────────────────────────────
     for doc_ids_in_l2 in docs_by_l2.values():
         for i in range(len(doc_ids_in_l2)):
             for j in range(i + 1, len(doc_ids_in_l2)):
                 da, db = doc_ids_in_l2[i], doc_ids_in_l2[j]
-                sim = _jaccard(doc_kw_sets[da], doc_kw_sets[db])
+                if algo == "jaccard":
+                    sim = _jaccard(doc_kw_sets[da], doc_kw_sets[db])
+                elif algo == "tfidf":
+                    sim = _cosine(doc_tfidf[da], doc_tfidf[db])
+                elif algo == "bm25":
+                    sim = _cosine(doc_bm25[da], doc_bm25[db])
+                else:  # embed
+                    sim = embed_sims.get((da, db), embed_sims.get((db, da), 0.0))
                 if sim >= 0.05:
                     width = max(1, min(8, round(sim * 20)))
                     edges.append({
@@ -443,14 +573,22 @@ def build_index(categorized: list[dict]) -> dict:
                         "width": width,
                     })
 
-    # ── L2↔L2 semantic edges (within same L1, keyword Jaccard similarity) ───
+    # ── L2↔L2 semantic edges (within same L1) ────────────────────────────────
     l2_keys = list(l2_seen.keys())
     for i in range(len(l2_keys)):
         for j in range(i + 1, len(l2_keys)):
             ka, kb = l2_keys[i], l2_keys[j]
             if ka[0] != kb[0]:  # must share same L1
                 continue
-            sim = _jaccard(l2_kw_sets[ka], l2_kw_sets[kb])
+            if algo == "jaccard":
+                sim = _jaccard(l2_kw_sets[ka], l2_kw_sets[kb])
+            elif algo == "tfidf":
+                sim = _cosine(l2_tfidf[ka], l2_tfidf[kb])
+            elif algo == "bm25":
+                sim = _cosine(l2_bm25[ka], l2_bm25[kb])
+            else:  # embed
+                la_id, lb_id = l2_seen[ka], l2_seen[kb]
+                sim = embed_sims.get((la_id, lb_id), embed_sims.get((lb_id, la_id), 0.0))
             if sim >= 0.05:
                 width = max(1, min(8, round(sim * 20)))
                 edges.append({
@@ -460,27 +598,55 @@ def build_index(categorized: list[dict]) -> dict:
                     "width": width,
                 })
 
-    # ── L1↔L1 edges (shared subcategory topic words) ────────────────────────
+    # ── L1↔L1 edges ───────────────────────────────────────────────────────────
     l1_list = list(l1_seen.keys())
     for i in range(len(l1_list)):
         for j in range(i + 1, len(l1_list)):
             la, lb = l1_list[i], l1_list[j]
-            words_a = set()
-            for name in l1_l2_names[la]:
-                words_a |= _keywords(name)
-            words_b = set()
-            for name in l1_l2_names[lb]:
-                words_b |= _keywords(name)
-            sim = _jaccard(words_a, words_b)
-            if sim > 0:
-                count_factor = (l1_doc_count[la] * l1_doc_count[lb]) ** 0.5
-                raw_width = sim * count_factor
-                edges.append({
-                    "from": l1_seen[la],
-                    "to": l1_seen[lb],
-                    "weight": round(sim, 3),
-                    "_raw_width": raw_width,
-                })
+            if algo == "jaccard":
+                words_a = set()
+                for name in l1_l2_names[la]:
+                    words_a |= _keywords(name)
+                words_b = set()
+                for name in l1_l2_names[lb]:
+                    words_b |= _keywords(name)
+                sim = _jaccard(words_a, words_b)
+                if sim > 0:
+                    count_factor = (l1_doc_count[la] * l1_doc_count[lb]) ** 0.5
+                    edges.append({
+                        "from": l1_seen[la],
+                        "to": l1_seen[lb],
+                        "weight": round(sim, 3),
+                        "_raw_width": sim * count_factor,
+                    })
+            elif algo == "tfidf":
+                sim = _cosine(l1_tfidf[la], l1_tfidf[lb])
+                if sim > 0:
+                    edges.append({
+                        "from": l1_seen[la],
+                        "to": l1_seen[lb],
+                        "weight": round(sim, 3),
+                        "_raw_width": sim,
+                    })
+            elif algo == "bm25":
+                sim = _cosine(l1_bm25[la], l1_bm25[lb])
+                if sim > 0:
+                    edges.append({
+                        "from": l1_seen[la],
+                        "to": l1_seen[lb],
+                        "weight": round(sim, 3),
+                        "_raw_width": sim,
+                    })
+            else:  # embed
+                la_id, lb_id = l1_seen[la], l1_seen[lb]
+                sim = embed_sims.get((la_id, lb_id), embed_sims.get((lb_id, la_id), 0.0))
+                if sim > 0:
+                    edges.append({
+                        "from": la_id,
+                        "to": lb_id,
+                        "weight": round(sim, 3),
+                        "_raw_width": sim,
+                    })
 
     # Normalise L1 edge widths to 1–8
     l1_edges = [e for e in edges if "_raw_width" in e]
@@ -701,6 +867,17 @@ def main() -> None:
         action="store_true",
         help="Ignore existing index.json and rebuild from scratch (clears UI renames/merges)",
     )
+    parser.add_argument(
+        "--algo",
+        choices=["jaccard", "tfidf", "bm25", "embed"],
+        default="embed",
+        help=(
+            "Similarity algorithm for semantic edges (default: embed). "
+            "jaccard: keyword set overlap; tfidf: TF-IDF cosine; "
+            "bm25: BM25 cosine; embed: sentence-transformer embeddings "
+            "(requires: uv add sentence-transformers)"
+        ),
+    )
     args = parser.parse_args()
 
     LOCAL_DIR.mkdir(exist_ok=True)
@@ -805,7 +982,7 @@ def main() -> None:
 
     write_text_cache(all_docs, cache)
 
-    index = build_index(categorized)
+    index = build_index(categorized, algo=args.algo)
     with open(INDEX_FILE, "w", encoding="utf-8") as f:
         json.dump(index, f, ensure_ascii=False, indent=2)
 
