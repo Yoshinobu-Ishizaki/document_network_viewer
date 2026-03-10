@@ -60,7 +60,10 @@ class LLMClient:
             except ImportError:
                 sys.exit("OpenAI provider requires the 'openai' package: uv add openai")
             self.model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-            self._client = _OpenAI()
+            self._client = _OpenAI(
+                organization=os.environ.get("OPENAI_ORG_ID") or None,
+                project=os.environ.get("OPENAI_PROJECT_ID") or None,
+            )
 
         elif self.provider == "gemini":
             try:
@@ -78,13 +81,29 @@ class LLMClient:
             self._genai = genai
             self._client = None  # Gemini uses module-level calls
 
+        elif self.provider == "gemini-login":
+            try:
+                import vertexai
+                from vertexai.generative_models import GenerativeModel as _GenerativeModel
+            except ImportError:
+                sys.exit(
+                    "gemini-login provider requires 'google-cloud-aiplatform': "
+                    "uv add google-cloud-aiplatform"
+                )
+            self.model = os.environ.get("GEMINI_LOGIN_MODEL", "gemini-1.5-flash")
+            project = os.environ.get("GEMINI_PROJECT")
+            location = os.environ.get("GEMINI_LOCATION", "us-central1")
+            vertexai.init(project=project, location=location)
+            self._GenerativeModel = _GenerativeModel
+            self._client = None
+
         elif self.provider == "claude-code":
             # Uses the `claude` CLI with your existing login — no API key required.
             self.model = os.environ.get("CLAUDE_CODE_MODEL", "claude-haiku-4-5-20251001")
             self._client = None
 
         else:
-            sys.exit(f"Unknown LLM_PROVIDER '{self.provider}'. Use: anthropic | openai | gemini | claude-code")
+            sys.exit(f"Unknown LLM_PROVIDER '{self.provider}'. Use: anthropic | openai | gemini | gemini-login | claude-code")
 
         print(f"Using LLM provider: {self.provider} / {self.model}")
 
@@ -108,6 +127,14 @@ class LLMClient:
         elif self.provider == "gemini":
             model = self._genai.GenerativeModel(self.model)
             resp = model.generate_content(prompt)
+            return resp.text.strip()
+
+        elif self.provider == "gemini-login":
+            model = self._GenerativeModel(self.model)
+            resp = model.generate_content(
+                prompt,
+                generation_config={"max_output_tokens": max_tokens},
+            )
             return resp.text.strip()
 
         elif self.provider == "claude-code":
